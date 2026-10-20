@@ -321,7 +321,7 @@
       ? "Подтвердим время и пришлём ссылку на звонок на почту."
       : emailed
         ? "Приглашение со ссылкой отправили на почту."
-        : "Сохраните ссылку — по ней подключитесь в назначенное время.";
+        : "Сохраните ссылку, по ней подключитесь в назначенное время.";
     const link = $("[data-done-link]");
     link.hidden = !joinUrl;
     if (joinUrl) {
@@ -387,7 +387,7 @@
       showDone(data, result);
     } catch (err) {
       console.error(err);
-      formError.textContent = err.code === "slot" ? "Это время уже недоступно — вернитесь и выберите другое." : ERROR_TEXT;
+      formError.textContent = err.code === "slot" ? "Это время уже заняли. Вернитесь и выберите другое." : ERROR_TEXT;
       formError.hidden = false;
     } finally {
       setBusy(false);
