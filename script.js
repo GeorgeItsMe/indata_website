@@ -1,4 +1,6 @@
 (() => {
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   /* ---------- Часы: московское время ---------- */
   const clock = document.getElementById("clock");
   const timeFmt = new Intl.DateTimeFormat("ru-RU", {
@@ -44,29 +46,44 @@
   const toastCode = toast.querySelector(".toast__code");
   const DEFAULT_TITLE = toastTitle.textContent;
   const DEFAULT_CODE = toastCode.textContent;
+  let CODE_LINE = DEFAULT_CODE;
   const TOAST_MS = 4200;
-  let hideTimer;
+  let hideTimer, typeTimer;
 
   function hideToast() {
     clearTimeout(hideTimer);
+    clearInterval(typeTimer);
     toast.classList.remove("is-visible");
   }
 
-  function showToast(title, text) {
+  function showToast() {
     clearTimeout(hideTimer);
-    toastTitle.textContent = title;
-    toastCode.textContent = text;
-    // Перезапускаем анимацию, если уведомление уже на экране.
+    clearInterval(typeTimer);
+    // Перезапускаем анимации, если тост уже на экране.
     toast.classList.remove("is-visible");
     void toast.offsetWidth;
     toast.classList.add("is-visible");
+
+    if (reduceMotion) {
+      toastCode.textContent = CODE_LINE;
+    } else {
+      // Строка «печатается», как в редакторе.
+      let i = 0;
+      toastCode.textContent = "";
+      typeTimer = setInterval(() => {
+        toastCode.textContent = CODE_LINE.slice(0, ++i);
+        if (i >= CODE_LINE.length) clearInterval(typeTimer);
+      }, 22);
+    }
     hideTimer = setTimeout(hideToast, TOAST_MS);
   }
 
   document.querySelectorAll("[data-soon]").forEach((link) => {
     link.addEventListener("click", (e) => {
       e.preventDefault();
-      showToast(link.dataset.soonTitle || DEFAULT_TITLE, link.dataset.soonText || DEFAULT_CODE);
+      toastTitle.textContent = link.dataset.soonTitle || DEFAULT_TITLE;
+      CODE_LINE = link.dataset.soonText || DEFAULT_CODE;
+      showToast();
     });
   });
   toast.addEventListener("click", hideToast);

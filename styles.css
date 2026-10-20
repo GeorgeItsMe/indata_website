@@ -310,6 +310,17 @@ h1 {
   border-radius: 50%;
   background: var(--accent);
 }
+.toast__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: toast-ping 1.6s cubic-bezier(0, 0, .2, 1) infinite;
+}
+@keyframes toast-ping {
+  75%, 100% { transform: scale(2.6); opacity: 0; }
+}
 .toast__body {
   display: flex;
   flex-direction: column;
@@ -323,11 +334,21 @@ h1 {
   letter-spacing: -0.01em;
 }
 .toast__code {
-  font-size: 13px;
-  line-height: 18px;
+  min-height: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 500;
-  color: rgb(255 255 255 / .55);
+  letter-spacing: -0.4px;
+  color: rgb(255 255 255 / .5);
 }
+.toast__code::after {
+  content: "_";
+  margin-left: 1px;
+  color: var(--accent);
+  animation: caret 1s steps(1) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
 .toast__bar {
   position: absolute;
   left: 0;
@@ -405,6 +426,7 @@ h1 {
   .appear { animation: none; }
   .btn, .btn__roll { transition: none; }
   .toast, .toast.is-visible { transition: opacity .2s linear, visibility 0s; transform: translate(-50%, 0); }
+  .toast__dot::after, .toast__code::after { animation: none; }
 }
 
 /* ======================================================================
@@ -640,18 +662,7 @@ h1 {
 .booker__title { margin-top: 2px; font-size: 20px; line-height: 28px; font-weight: 500; letter-spacing: -0.02em; }
 .booker__desc { margin-top: 10px; font-size: 14px; line-height: 20px; color: var(--b-text); }
 .booker__desc ul { list-style: none; }
-.booker__desc li { position: relative; padding-left: 14px; }
-.booker__desc li::before {
-  content: "";
-  position: absolute;
-  left: 2px;
-  top: 8px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: .45;
-}
+.booker__desc li::before { content: "— "; }
 .booker__facts {
   list-style: none;
   margin-top: 20px;
