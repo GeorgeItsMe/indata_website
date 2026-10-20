@@ -1,0 +1,12 @@
+{
+  "name": "indata-booking",
+  "private": true,
+  "description": "Запись на звонок: встреча в Яндекс Телемосте и письма команде и клиенту",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "nodemailer": "10.0.15"
+  }
+}

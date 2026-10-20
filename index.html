@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru" class="home">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InData — разработка цифровых продуктов</title>
+  <meta name="description" content="InData — разработка полного цикла: от идеи до релиза для компаний, которые знает вся страна.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/InterDisplay-Medium.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/roboto-mono-latin-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css?v=11">
+</head>
+<body>
+  <span class="frame-guide frame-guide--left" aria-hidden="true"></span>
+  <span class="frame-guide frame-guide--right" aria-hidden="true"></span>
+
+  <div class="side-clip side-clip--left" aria-hidden="true">
+    <canvas class="ascii ascii-left" data-scene="coder" data-cols="76" data-follow></canvas>
+  </div>
+  <div class="side-clip side-clip--right" aria-hidden="true">
+    <canvas class="ascii ascii-right" data-scene="coder" data-pose="cycle" data-cols="76" data-follow data-mirror data-headphones data-seed="2"></canvas>
+  </div>
+
+  <header class="header appear">
+    <span class="mono">indata.agency</span>
+    <a class="wordmark" href="/" aria-label="InData — на главную">
+      <svg class="wordmark__mark" viewBox="0 0 26 26" aria-hidden="true">
+        <rect width="7" height="26" rx="1"/>
+        <path d="M10 0h3a13 13 0 0 1 0 26h-3z"/>
+      </svg>
+      <span class="wordmark__text">InData</span>
+    </a>
+    <span class="mono" id="clock"></span>
+  </header>
+
+  <main>
+    <section class="hero-frame">
+      <span class="frame-tick frame-tick--left" aria-hidden="true"></span>
+      <span class="frame-tick frame-tick--right" aria-hidden="true"></span>
+
+      <h1 class="appear" style="animation-delay:.1s">
+        Пишем хорошие решения <br class="wide-only">для сильных продуктов в <span class="accent">InData</span>
+      </h1>
+
+      <p class="lead appear" style="animation-delay:.2s">
+        <span class="ink">Разработка полного цикла: от идеи до релиза</span>
+        для&nbsp;компаний, <br class="wide-only">которые знает вся страна
+      </p>
+
+      <div class="actions appear" style="animation-delay:.3s">
+        <a class="btn btn--light" href="portfolio.html">
+          <span class="btn__roll">
+            <span>Портфолио</span>
+            <span aria-hidden="true">Портфолио</span>
+          </span>
+        </a>
+        <a class="btn btn--dark" href="call.html">
+          <span class="btn__roll">
+            <span>Обсудить проект</span>
+            <span aria-hidden="true">Обсудить проект</span>
+          </span>
+        </a>
+      </div>
+
+      <div class="clients appear" style="animation-delay:.4s">
+        <span class="clients__label">Наши клиенты</span>
+        <ul class="clients__list">
+          <li class="logo" style="--h:22px">
+            <img class="logo__mono" src="logos/mono/ddx.svg" alt="DDX Fitness" draggable="false">
+            <img class="logo__color" src="logos/color/ddx.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:32px">
+            <img class="logo__mono" src="logos/mono/tbank.svg" alt="Т‑Банк" draggable="false">
+            <img class="logo__color" src="logos/color/tbank.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:30px">
+            <img class="logo__mono" src="logos/mono/skolkovo.svg" alt="Сколково" draggable="false">
+            <img class="logo__color" src="logos/color/skolkovo.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:26px">
+            <img class="logo__mono" src="logos/mono/chernogolovka.svg" alt="Черноголовка" draggable="false">
+            <img class="logo__color" src="logos/color/chernogolovka.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:20px">
+            <img class="logo__mono" src="logos/mono/borjomi.svg" alt="Боржоми" draggable="false">
+            <img class="logo__color" src="logos/color/borjomi.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:22px">
+            <img class="logo__mono" src="logos/mono/alfa.svg" alt="Альфа‑Банк" draggable="false">
+            <img class="logo__color" src="logos/color/alfa.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:36px">
+            <img class="logo__mono" src="logos/mono/poker-empire.svg" alt="Покер Империя" draggable="false">
+            <img class="logo__color" src="logos/color/poker-empire.svg" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:30px">
+            <img class="logo__mono" src="logos/mono/svyatoy-istochnik.png" alt="Святой Источник" draggable="false">
+            <img class="logo__color" src="logos/color/svyatoy-istochnik.png" alt="" aria-hidden="true" draggable="false">
+          </li>
+          <li class="logo" style="--h:24px">
+            <img class="logo__mono" src="logos/mono/yusklad.png" alt="ЮСклад" draggable="false">
+            <img class="logo__color" src="logos/color/yusklad.png" alt="" aria-hidden="true" draggable="false">
+          </li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span class="toast__dot" aria-hidden="true"></span>
+    <span class="toast__body">
+      <span class="toast__title">Портфолио скоро будет</span>
+      <span class="toast__code">// собираем лучшие кейсы, загляните чуть позже</span>
+    </span>
+    <span class="toast__bar" aria-hidden="true"></span>
+  </div>
+
+  <script src="ascii.js?v=12" defer></script>
+  <script src="script.js?v=6" defer></script>
+</body>
+</html>

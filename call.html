@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ru" class="call">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Обсудить проект — InData</title>
+  <meta name="description" content="Запишитесь на 15‑минутный звонок с InData: выберите удобное время, и мы обсудим ваш проект.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/InterDisplay-Medium.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/roboto-mono-latin-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css?v=9">
+</head>
+<body>
+  <span class="frame-guide frame-guide--left" aria-hidden="true"></span>
+  <span class="frame-guide frame-guide--right" aria-hidden="true"></span>
+
+  <div class="side-clip side-clip--left" aria-hidden="true">
+    <canvas class="ascii ascii-left" data-scene="coder" data-cols="76" data-follow></canvas>
+  </div>
+  <div class="side-clip side-clip--right" aria-hidden="true">
+    <canvas class="ascii ascii-right" data-scene="coder" data-pose="cycle" data-cols="76" data-follow data-mirror data-headphones data-seed="2"></canvas>
+  </div>
+
+  <header class="header appear">
+    <span class="mono">indata.agency</span>
+    <a class="wordmark" href="index.html" aria-label="InData — на главную">
+      <svg class="wordmark__mark" viewBox="0 0 26 26" aria-hidden="true">
+        <rect width="7" height="26" rx="1"/>
+        <path d="M10 0h3a13 13 0 0 1 0 26h-3z"/>
+      </svg>
+      <span class="wordmark__text">InData</span>
+    </a>
+    <span class="mono" id="clock"></span>
+  </header>
+
+  <a class="back appear" href="index.html" aria-label="Назад на главную">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10H4m5-5-5 5 5 5"/></svg>
+  </a>
+
+  <main>
+    <section class="hero-frame">
+      <span class="frame-tick frame-tick--left" aria-hidden="true"></span>
+      <span class="frame-tick frame-tick--right" aria-hidden="true"></span>
+
+      <h1 class="appear" style="animation-delay:.05s">
+        <span class="accent">Обсудим ваш проект за 15&nbsp;минут.</span><br>
+        Выберите время, а&nbsp;мы подготовимся к&nbsp;звонку.
+      </h1>
+
+      <div class="cal-stage appear" style="animation-delay:.15s">
+        <div class="booker" id="booker" data-view="pick">
+          <aside class="booker__meta">
+            <span class="booker__avatar" aria-hidden="true">
+              <svg viewBox="0 0 26 26"><rect width="7" height="26" rx="1"/><path d="M10 0h3a13 13 0 0 1 0 26h-3z"/></svg>
+            </span>
+            <p class="booker__org">InData</p>
+            <h2 class="booker__title">Знакомство с InData</h2>
+            <div class="booker__desc">
+              <p>Что успеем за 15 минут:</p>
+              <ul>
+                <li>познакомимся</li>
+                <li>обсудим продукт, задачи и сроки</li>
+                <li>покажем работы и расскажем, как строим процесс</li>
+              </ul>
+            </div>
+            <ul class="booker__facts">
+              <li class="booker__when">
+                <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+                <span><b data-when-date></b><span data-when-time></span></span>
+              </li>
+              <li>
+                <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                15 мин
+              </li>
+              <li>
+                <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3.5v11L16 14"/></svg>
+                Яндекс Телемост
+              </li>
+              <li>
+                <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+                <span class="tz"><select id="tz" aria-label="Часовой пояс"></select></span>
+              </li>
+            </ul>
+          </aside>
+
+          <section class="booker__cal" aria-label="Выбор даты">
+            <div class="month">
+              <h3 class="month__title"><span data-month></span> <span class="month__year" data-year></span></h3>
+              <div class="month__nav">
+                <button class="b-icon-btn" type="button" data-prev aria-label="Предыдущий месяц">
+                  <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <button class="b-icon-btn" type="button" data-next aria-label="Следующий месяц">
+                  <svg class="b-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="weekdays" aria-hidden="true">
+              <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+            </div>
+            <div class="days" data-days></div>
+          </section>
+
+          <section class="booker__slots" aria-label="Выбор времени">
+            <p class="slots__head" data-slots-head></p>
+            <div class="slots__list" data-slots></div>
+          </section>
+
+          <!-- Заявка уходит POST-запросом (JSON) на адрес из data-endpoint -->
+          <form class="booker__form" data-endpoint="" novalidate>
+            <div class="field">
+              <label for="f-name">Ваше имя <i>*</i></label>
+              <input id="f-name" name="name" autocomplete="name" placeholder="Иван" required aria-describedby="e-name">
+              <p class="field__error" id="e-name"></p>
+            </div>
+            <div class="field">
+              <label for="f-email">Email <i>*</i></label>
+              <input id="f-email" name="email" type="email" autocomplete="email" placeholder="ivan@company.ru" required aria-describedby="e-email">
+              <p class="field__error" id="e-email"></p>
+            </div>
+            <div class="field">
+              <label for="f-contact">Телефон или Telegram</label>
+              <input id="f-contact" name="contact" autocomplete="tel" placeholder="+7 900 000-00-00 или @username">
+            </div>
+            <div class="field">
+              <label for="f-notes">О проекте</label>
+              <textarea id="f-notes" name="notes" rows="4" placeholder="Пара слов о продукте, задачах и сроках"></textarea>
+            </div>
+            <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+            <div class="field">
+              <label class="check">
+                <input type="checkbox" name="consent" required aria-describedby="e-consent">
+                <span>Соглашаюсь на обработку персональных данных</span>
+              </label>
+              <p class="field__error" id="e-consent"></p>
+            </div>
+            <p class="form__error" role="alert" data-form-error hidden>Не получилось отправить заявку. Попробуйте ещё раз чуть позже.</p>
+            <div class="form__actions">
+              <button class="b-btn b-btn--ghost" type="button" data-back>Назад</button>
+              <button class="b-btn b-btn--brand" type="submit">Подтвердить</button>
+            </div>
+          </form>
+
+          <div class="booker__done" tabindex="-1">
+            <span class="done__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+            </span>
+            <h3 class="done__title" data-done-title>Заявка отправлена</h3>
+            <p class="done__text" data-done-text>Подтвердим время и пришлём ссылку на звонок на почту.</p>
+            <dl class="done__list">
+              <div><dt>Что</dt><dd>Знакомство с InData, 15 мин</dd></div>
+              <div><dt>Когда</dt><dd data-done-when></dd></div>
+              <div data-done-link hidden><dt>Где</dt><dd>Яндекс Телемост<br><a href="" target="_blank" rel="noopener"></a></dd></div>
+              <div><dt>Кто</dt><dd data-done-who></dd></div>
+              <div data-done-notes><dt>О проекте</dt><dd></dd></div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="ascii.js?v=12" defer></script>
+  <script src="script.js?v=6" defer></script>
+  <script src="call.js?v=3" defer></script>
+</body>
+</html>
