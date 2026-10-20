@@ -381,16 +381,12 @@ h1 {
   .actions { margin-top: 22px; }
 
   .clients { margin-top: 80px; }
-  /* Ряды переносятся и центрируются: при любом числе логотипов нижний ряд не «висит» слева. */
   .clients__list {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    align-items: center;
     width: auto;
-    max-width: 760px;
     margin-top: 26px;
-    column-gap: 60px;
+    grid-template-columns: repeat(4, auto);
+    justify-content: center;
+    column-gap: 64px;
     row-gap: 36px;
   }
   .clients__list > .logo:nth-child(n) { justify-self: center; }
