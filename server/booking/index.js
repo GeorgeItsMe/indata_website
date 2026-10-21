@@ -4,9 +4,9 @@
 
    Переменные окружения:
      TELEMOST_TOKEN  OAuth-токен Яндекса с правом telemost-api:conferences.create
-     ALLOWED_ORIGIN  с каких сайтов принимать заявки, через запятую: https://indata.agency
+     ALLOWED_ORIGIN  с каких сайтов принимать заявки, через запятую: https://indata.group
      TEAM_EMAIL      куда присылать заявки
-     SMTP_USER       ящик-отправитель на Яндекс 360, например hello@indata.agency
+     SMTP_USER       ящик-отправитель на Яндекс 360, например hello@indata.group
      SMTP_PASS       пароль приложения для этого ящика
      SMTP_HOST       по умолчанию smtp.yandex.ru
      SMTP_PORT       по умолчанию 465
@@ -211,7 +211,7 @@ function invite(b, joinUrl, organizer, stamp) {
     "PRODID:-//InData//Booking//RU",
     "METHOD:REQUEST",
     "BEGIN:VEVENT",
-    `UID:${crypto.randomUUID()}@indata.agency`,
+    `UID:${crypto.randomUUID()}@indata.group`,
     `DTSTAMP:${utc(stamp)}`,
     `DTSTART:${utc(b.start)}`,
     `DTEND:${utc(b.start + DURATION_MIN * MIN)}`,
