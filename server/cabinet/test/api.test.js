@@ -173,6 +173,40 @@ test("созвоны: запись и договорённости", async () =>
   assert.equal((await admin("PATCH", `/api/admin/projects/${project.id}/meetings/${meeting.id}`, meeting)).status, 404);
 });
 
+test("задачи для заказчика: клиент отмечает, админ ведёт", async () => {
+  const add = (body) => admin("POST", `/api/admin/projects/${project.id}/tasks`, body);
+  assert.equal((await add({ title: "" })).status, 400);
+  assert.equal((await add({ title: "x", url: "javascript:1" })).status, 400);
+  await add({ title: "Передать графику", text: "Персонаж и предметы" });
+  await add({ title: "Согласовать формат онлайн-покера", due: "2026-10-26", url: "https://figma.com/x" });
+  const r = await add({ title: "Подписать допсоглашение", due: "2026-10-24" });
+  assert.deepEqual(r.json.project.tasks.map((t) => t.title), ["Подписать допсоглашение", "Согласовать формат онлайн-покера", "Передать графику"], "по сроку, без срока в конце");
+
+  const a = clientA.call;
+  const list = await a("GET", "/api/projects");
+  assert.equal(list.json.projects[0].openTasks, 3);
+  const task = r.json.project.tasks[0];
+  const done = await a("POST", `/api/projects/${project.id}/tasks/${task.id}/done`, { done: true });
+  assert.equal(done.status, 200);
+  const t = done.json.project.tasks.find((x) => x.id === task.id);
+  assert.equal(t.done, true);
+  assert.equal(t.doneBy, "Иван");
+  assert.equal(done.json.project.tasks.at(-1).id, task.id, "выполненные внизу");
+  assert.equal((await a("GET", "/api/projects")).json.projects[0].openTasks, 2);
+
+  assert.equal((await a("POST", `/api/admin/projects/${project.id}/tasks`, { title: "x" })).status, 403);
+  assert.equal((await a("DELETE", `/api/admin/projects/${project.id}/tasks/${task.id}`)).status, 403);
+  assert.equal((await clientB.call("POST", `/api/projects/${project.id}/tasks/${task.id}/done`, { done: true })).status, 404);
+  assert.equal((await a("POST", `/api/projects/${project.id}/tasks/nope/done`, { done: true })).status, 404);
+
+  const undo = await a("POST", `/api/projects/${project.id}/tasks/${task.id}/done`, { done: false });
+  assert.equal(undo.json.project.tasks[0].doneBy, "");
+  const edit = await admin("PATCH", `/api/admin/projects/${project.id}/tasks/${task.id}`, { title: "Подписать допсоглашение №2", due: "2026-10-25" });
+  assert.equal(edit.json.project.tasks[0].title, "Подписать допсоглашение №2");
+  const del = await admin("DELETE", `/api/admin/projects/${project.id}/tasks/${task.id}`);
+  assert.equal(del.json.project.tasks.length, 2);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

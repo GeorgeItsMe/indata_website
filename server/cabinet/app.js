@@ -1,6 +1,7 @@
 "use strict";
 /* Кабинет клиента InData (app.indata.group): API и раздача интерфейса.
-   Клиент видит свои проекты: этапы, созвоны с договорённостями, ленту обновлений, оплаты и документы.
+   Клиент видит свои проекты: этапы, задачи для него, созвоны с договорённостями, ленту обновлений,
+   оплаты и документы.
    Администратор заводит клиентов и проекты и ведёт их. */
 
 const fs = require("node:fs");
@@ -64,6 +65,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       stages: p.stages, payments: p.payments,
       updates: newestFirst(p.updates),
       meetings: newestFirst(p.meetings || []),
+      tasks: tasksOrder(p.tasks || []),
       files: p.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt })),
     };
     if (user.role === "admin") {
@@ -79,6 +81,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return {
       id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
       progress: progress(stages),
+      openTasks: (p.tasks || []).filter((t) => !t.done).length,
       stage: active ? active.title : stages.every((s) => s.status === "done") && stages.length ? "Готово" : "",
       ...(user.role === "admin" ? { clients: p.clientIds.map((id) => db.users.find((u) => u.id === id)?.name).filter(Boolean) } : {}),
     };
@@ -216,6 +219,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       payments: [],
       updates: [],
       meetings: [],
+      tasks: [],
       files: [],
       createdAt: new Date(now()).toISOString(),
     };
@@ -317,6 +321,51 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     store.save();
     return { body: { project: projectView(p, user) } };
   }, "admin");
+
+  // Задачи для заказчика: что согласовать, передать или подписать. Клиент отмечает их выполненными сам.
+  const taskFields = (body) => ({
+    title: required(str(body.title, 200), "task_title"),
+    text: str(body.text, 2000),
+    due: dateOf(body.due),
+    url: body.url ? urlOf(body.url) : "",
+  });
+  const findTask = (p, taskId) => (p.tasks || []).find((t) => t.id === taskId) || fail(404, "not_found");
+
+  route("POST", "/api/admin/projects/:id/tasks", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    p.tasks = [...(p.tasks || []), { id: store.id(), ...taskFields(body), done: false, doneAt: "", doneBy: "", createdAt: new Date(now()).toISOString() }];
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("PATCH", "/api/admin/projects/:id/tasks/:taskId", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    Object.assign(findTask(p, params.taskId), taskFields(body));
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("DELETE", "/api/admin/projects/:id/tasks/:taskId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    findTask(p, params.taskId);
+    p.tasks = p.tasks.filter((t) => t.id !== params.taskId);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("POST", "/api/projects/:id/tasks/:taskId/done", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    const task = findTask(p, params.taskId);
+    task.done = Boolean(body.done);
+    task.doneAt = task.done ? new Date(now()).toISOString() : "";
+    task.doneBy = task.done ? user.name : "";
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  });
 
   // Файл приходит телом запроса как есть, имя — в заголовке X-Filename (encodeURIComponent).
   route("POST", "/api/admin/projects/:id/files", async ({ user, params, req }) => {
@@ -507,6 +556,14 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 // Свежие сверху; в один день выше та запись, что добавлена позже.
 function newestFirst(list) {
   return list.map((x, i) => [x, i]).sort(([a, i], [b, j]) => b.date.localeCompare(a.date) || j - i).map(([x]) => x);
+}
+
+// Сначала открытые: по сроку, без срока в конце; потом выполненные, свежие сверху.
+function tasksOrder(tasks) {
+  const open = tasks.filter((t) => !t.done).map((t, i) => [t, i])
+    .sort(([a, i], [b, j]) => (a.due || "9999").localeCompare(b.due || "9999") || i - j).map(([t]) => t);
+  const done = tasks.filter((t) => t.done).sort((a, b) => b.doneAt.localeCompare(a.doneAt));
+  return [...open, ...done];
 }
 
 function progress(stages) {

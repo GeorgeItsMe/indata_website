@@ -178,6 +178,7 @@
     { re: /^\/login$/, view: viewLogin, access: "public" },
     { re: /^\/$/, view: viewHome },
     { re: /^\/p\/([\w-]+)$/, view: viewProject },
+    { re: /^\/p\/([\w-]+)\/tasks$/, view: (alive, id) => viewProject(alive, id, "tasks") },
     { re: /^\/account$/, view: viewAccount },
     { re: /^\/admin$/, view: viewAdminProjects, access: "admin" },
     { re: /^\/admin\/clients$/, view: viewAdminClients, access: "admin" },
@@ -321,36 +322,66 @@
           h("span", { text: p.stage ? p.stage : "Скоро начнём" }),
           h("span", { class: "accent", text: `${p.progress}%` })),
         h("div", { class: "bar" }, h("i", { vars: { "--p": `${p.progress}%` } })),
-        h("span", { class: "mono", text: `Обновлено ${fmtDate(p.updatedAt)}` })));
+        p.openTasks
+          ? h("span", { class: "mono accent", text: `${me.role === "admin" ? "У заказчика" : "Нужно от вас"}: ${p.openTasks} ${plural(p.openTasks, "задача", "задачи", "задач")}` })
+          : h("span", { class: "mono", text: `Обновлено ${fmtDate(p.updatedAt)}` })));
   }
 
-  async function viewProject(alive, id) {
+  async function viewProject(alive, id, tab = "overview") {
     loading();
-    const { project: p } = await api("GET", `/api/projects/${id}`);
+    let { project: p } = await api("GET", `/api/projects/${id}`);
     if (!alive()) return;
+    const admin = me.role === "admin";
+
+    async function toggle(task) {
+      try {
+        p = (await api("POST", `/api/projects/${p.id}/tasks/${task.id}/done`, { done: !task.done })).project;
+        draw();
+        toast(task.done ? "Задача снова в работе" : "Отметили: выполнено. Спасибо!");
+      } catch (err) {
+        toast(errorText(err));
+      }
+    }
+
+    function draw() {
+      const open = p.tasks.filter((t) => !t.done);
+      const base = `/p/${p.id}`;
+      const head = h("div", { class: "project-head" },
+        h("div", {},
+          h("span", { class: "eyebrow mono", text: admin ? "Так проект видит клиент" : "Проект" }),
+          h("h1", { class: "h1", text: p.title }),
+          p.summary ? h("p", { class: "lead", text: p.summary }) : null),
+        admin ? h("div", { class: "actions" }, btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" })) : null);
+      const tabs = h("nav", { class: "subtabs", "aria-label": "Разделы проекта" },
+        link(base, { "aria-current": tab === "overview" ? "page" : null }, "Обзор"),
+        link(`${base}/tasks`, { "aria-current": tab === "tasks" ? "page" : null },
+          admin ? "Задачи для заказчика" : "Задачи для вас",
+          open.length ? h("span", { class: "badge", text: String(open.length) }) : null));
+      root.replaceChildren(...shell(head, tabs, tab === "tasks" ? tasksTab(p, toggle) : overviewTab(p, open), contactBlock()));
+    }
+    draw();
+  }
+
+  function overviewTab(p, open) {
     const active = p.stages.find((s) => s.status === "active");
     const finished = p.stages.length > 0 && p.stages.every((s) => s.status === "done");
     const pct = progressOf(p.stages);
-
-    const head = h("div", { class: "project-head" },
-      h("div", {},
-        h("span", { class: "eyebrow mono", text: me.role === "admin" ? "Так проект видит клиент" : "Проект" }),
-        h("h1", { class: "h1", text: p.title }),
-        p.summary ? h("p", { class: "lead", text: p.summary }) : null),
-      me.role === "admin"
-        ? h("div", { class: "actions" }, btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" }))
-        : null);
-
-    const status = h("section", { class: "status", "aria-label": "Статус проекта" },
-      h("div", { class: "status__num", text: `${pct}%` }),
-      h("p", { class: "status__now" },
-        finished ? "Проект завершён" : active ? `Сейчас: ${active.title}` : "Скоро начнём",
-        h("small", { text: active && active.end ? `Плановый срок этапа: ${fmtDate(active.end)}` : `Обновлено ${fmtDate(p.updatedAt)}` })),
-      h("div", { class: "bar" }, h("i", { vars: { "--p": `${pct}%` } })));
-
-    root.replaceChildren(...shell(
-      head,
-      status,
+    const nearest = open.find((t) => t.due);
+    return [
+      open.length
+        ? h("section", { class: "notice" },
+          h("p", { class: "notice__title" },
+            me.role === "admin" ? "У заказчика " : "Нужно от вас: ",
+            h("b", { text: `${open.length} ${plural(open.length, "задача", "задачи", "задач")}` }),
+            h("small", { text: nearest ? `Ближайший срок: ${fmtDate(nearest.due)}` : "Без срока" })),
+          btn("Открыть задачи", { href: `/p/${p.id}/tasks`, small: true }))
+        : null,
+      h("section", { class: "status", "aria-label": "Статус проекта" },
+        h("div", { class: "status__num", text: `${pct}%` }),
+        h("p", { class: "status__now" },
+          finished ? "Проект завершён" : active ? `Сейчас: ${active.title}` : "Скоро начнём",
+          h("small", { text: active && active.end ? `Плановый срок этапа: ${fmtDate(active.end)}` : `Обновлено ${fmtDate(p.updatedAt)}` })),
+        h("div", { class: "bar" }, h("i", { vars: { "--p": `${pct}%` } }))),
       p.stages.length ? stagesStrip(p.stages) : null,
       h("div", { class: "columns" },
         h("div", { class: "stack stack--wide" },
@@ -365,8 +396,45 @@
         h("div", { class: "stack" },
           paymentsCard(p.payments),
           filesCard(p))),
-      contactBlock(),
-    ));
+    ];
+  }
+
+  function tasksTab(p, onToggle) {
+    const done = p.tasks.filter((t) => t.done);
+    return h("section", { class: "tasks-page" },
+      h("p", { class: "lead tasks-lead", text: me.role === "admin"
+        ? "Что нужно от заказчика. Он отмечает задачи сам, отметку видно здесь."
+        : "Что нужно от вас, чтобы мы шли по срокам. Когда сделаете, отметьте задачу, и мы увидим." }),
+      tasksList(p.tasks.filter((t) => !t.done), { onToggle, empty: "Сейчас от вас ничего не нужно. Как только понадобится, задача появится здесь." }),
+      done.length ? [h("p", { class: "tasks-done-title mono", text: `Выполнено: ${done.length}` }), tasksList(done, { onToggle })] : null);
+  }
+
+  // Задача: кружок-отметка, название, пояснение, срок или кто и когда выполнил, ссылка.
+  function tasksList(tasks, { onToggle, onEdit = null, onDelete = null, empty = "Задач пока нет." }) {
+    if (!tasks.length) return h("p", { class: "empty", text: empty });
+    return h("ul", { class: "tasks" }, tasks.map((t) => {
+      const overdue = !t.done && t.due && t.due < today();
+      return h("li", { class: `task${t.done ? " is-done" : ""}` },
+        h("button", {
+          class: "task__check", type: "button", "aria-pressed": String(t.done),
+          title: t.done ? "Вернуть в работу" : "Отметить выполненной",
+          "aria-label": `${t.done ? "Вернуть в работу" : "Отметить выполненной"}: ${t.title}`,
+          onclick: () => onToggle(t),
+        }),
+        h("div", { class: "task__body" },
+          h("p", { class: "task__title", text: t.title }),
+          t.text ? h("p", { class: "task__text", text: t.text }) : null,
+          h("div", { class: "task__meta" },
+            t.done
+              ? h("span", { class: "tag tag--ok", text: `Выполнено ${fmtDate(t.doneAt.slice(0, 10))}${t.doneBy ? ` · ${t.doneBy}` : ""}` })
+              : t.due ? h("span", { class: `tag ${overdue ? "tag--due" : "muted"}`, text: `${overdue ? "Срок был" : "Сделать до"} ${fmtDate(t.due)}` }) : null,
+            t.url ? h("a", { class: "chip", href: t.url, target: "_blank", rel: "noopener noreferrer", text: `${hostOf(t.url)} ↗` }) : null)),
+        onEdit
+          ? h("div", { class: "row-tools" },
+            h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить: ${t.title}`, onclick: () => onEdit(t), text: "✎" }),
+            h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить: ${t.title}`, onclick: () => onDelete(t), text: "✕" }))
+          : null);
+    }));
   }
 
   function stagesStrip(stages) {
@@ -652,6 +720,84 @@
       }
     });
 
+    // Задачи для заказчика
+    let editingTask = null;
+    const tasksBox = h("div");
+    const taskTitle = h("input", { class: "input", maxlength: "200", required: true, placeholder: "Например, Согласовать формат онлайн-покера" });
+    const taskDue = h("input", { class: "input", type: "date" });
+    const taskText = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Что именно нужно и в каком виде" });
+    const taskUrl = h("input", { class: "input", type: "url", maxlength: "500", placeholder: "https://… макеты, документ или форма, если нужна" });
+    const taskError = h("p", { class: "form__error", hidden: true });
+    const taskBtn = btn("Добавить задачу", { type: "submit" });
+    const taskCancel = btn("Отмена", { variant: "light", hidden: true, onclick: () => resetTaskForm() });
+    function resetTaskForm() {
+      editingTask = null;
+      taskForm.reset();
+      taskError.hidden = true;
+      setBtnLabel(taskBtn, "Добавить задачу");
+      taskCancel.hidden = true;
+    }
+    async function taskCall(promise, message) {
+      try {
+        p = (await promise).project;
+        renderTasks();
+        if (message) toast(message);
+        return true;
+      } catch (err) {
+        toast(errorText(err));
+        return false;
+      }
+    }
+    const renderTasks = () => tasksBox.replaceChildren(tasksList(p.tasks, {
+      empty: "Задач для заказчика пока нет.",
+      onToggle: (t) => taskCall(api("POST", `/api/projects/${p.id}/tasks/${t.id}/done`, { done: !t.done }), t.done ? "Задача снова открыта" : "Отмечено выполненной"),
+      onEdit(t) {
+        editingTask = t.id;
+        taskTitle.value = t.title;
+        taskDue.value = t.due;
+        taskText.value = t.text;
+        taskUrl.value = t.url;
+        setBtnLabel(taskBtn, "Сохранить задачу");
+        taskCancel.hidden = false;
+        taskForm.scrollIntoView({ block: "center", behavior: "smooth" });
+        taskTitle.focus({ preventScroll: true });
+      },
+      async onDelete(t) {
+        if (!confirm(`Удалить задачу «${t.title}»?`)) return;
+        if (await taskCall(api("DELETE", `/api/admin/projects/${p.id}/tasks/${t.id}`)) && editingTask === t.id) resetTaskForm();
+      },
+    }));
+    renderTasks();
+    const taskForm = h("form", {
+      class: "form",
+      async onsubmit(e) {
+        e.preventDefault();
+        taskError.hidden = true;
+        taskBtn.disabled = true;
+        const body = { title: taskTitle.value, due: taskDue.value, text: taskText.value, url: taskUrl.value.trim() };
+        try {
+          p = (editingTask
+            ? await api("PATCH", `/api/admin/projects/${p.id}/tasks/${editingTask}`, body)
+            : await api("POST", `/api/admin/projects/${p.id}/tasks`, body)).project;
+          toast(editingTask ? "Задача обновлена" : "Задача добавлена, клиент её видит");
+          resetTaskForm();
+          renderTasks();
+        } catch (err) {
+          taskError.textContent = errorText(err);
+          taskError.hidden = false;
+        } finally {
+          taskBtn.disabled = false;
+        }
+      },
+    },
+    h("div", { class: "grid-2" },
+      h("label", { class: "field" }, h("span", { text: "Задача" }), taskTitle),
+      h("label", { class: "field" }, h("span", { text: "Срок" }), taskDue)),
+    h("label", { class: "field" }, h("span", { text: "Пояснение" }), taskText),
+    h("label", { class: "field" }, h("span", { text: "Ссылка" }), taskUrl),
+    taskError,
+    h("div", { class: "actions" }, taskBtn, taskCancel));
+
     // Созвоны
     let editingMeeting = null;
     const meetingsBox = h("div");
@@ -855,6 +1001,10 @@
             onclick: () => { payments.push({ id: "", title: "", amount: "", due: "", paid: false, paidAt: "" }); renderPayments(); markDirty(); payRows.lastElementChild.querySelector("input").focus(); },
           }))),
         saveBar,
+        h("section", { class: "card stack" },
+          h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Задачи для заказчика" }), link(`/p/${p.id}/tasks`, { class: "mono" }, "Как видит клиент ↗")),
+          taskForm,
+          tasksBox),
         h("section", { class: "card stack" },
           h("h2", { class: "h2", text: "Созвоны и договорённости" }),
           meetingForm,
