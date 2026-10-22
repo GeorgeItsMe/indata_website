@@ -1,0 +1,13 @@
+{
+  "name": "indata-cabinet",
+  "private": true,
+  "description": "Кабинет клиента InData: статус проекта, обновления, оплаты и документы",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/api.test.js"
+  }
+}

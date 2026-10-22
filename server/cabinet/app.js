@@ -1,0 +1,507 @@
+"use strict";
+/* Кабинет клиента InData (app.indata.group): API и раздача интерфейса.
+   Клиент видит свои проекты: этапы, ленту обновлений, оплаты и документы.
+   Администратор заводит клиентов и проекты и ведёт их. */
+
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { createStore } = require("./store.js");
+const { hashPassword, checkPassword, generatePassword, createSessions, createLimiter } = require("./auth.js");
+
+const JSON_LIMIT = 256 * 1024;
+const FILE_LIMIT = 25 * 1024 * 1024;
+const STATUSES = ["todo", "active", "done"];
+const DEFAULT_STAGES = ["Аналитика", "Дизайн", "Разработка", "Тестирование", "Запуск"];
+// Эти типы браузер может показать сам; остальное отдаём как поток байт, чтобы загруженный
+// HTML или SVG не исполнился на нашем домене.
+const INLINE_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"]);
+const STATIC_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
+};
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    + "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "same-origin",
+};
+
+class HttpError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.status = status;
+    this.code = code;
+  }
+}
+const fail = (status, code) => { throw new HttpError(status, code); };
+
+function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"), siteDir = null,
+  origins = [], secureCookie = true, now = Date.now, log = console } = {}) {
+  const store = createStore(dataDir);
+  const { db } = store;
+  const sessions = createSessions(store, now);
+  const limiter = createLimiter({ now });
+  const routes = [];
+  const route = (method, pattern, handler, access = "user", { rawBody = false } = {}) => {
+    const keys = [];
+    const re = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return "([^/]+)"; })}$`);
+    routes.push({ method, re, keys, handler, access, rawBody });
+  };
+
+  /* ---------- Представления ---------- */
+  const publicUser = (u) => ({
+    id: u.id, login: u.login, name: u.name, company: u.company || "", role: u.role,
+    disabled: Boolean(u.disabled), createdAt: u.createdAt,
+  });
+
+  function projectView(p, user) {
+    const view = {
+      id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
+      stages: p.stages, payments: p.payments,
+      // Свежие сверху; в один день выше та запись, что опубликована позже.
+      updates: p.updates.map((u, i) => [u, i]).sort(([a, i], [b, j]) => b.date.localeCompare(a.date) || j - i).map(([u]) => u),
+      files: p.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt })),
+    };
+    if (user.role === "admin") {
+      view.clientIds = p.clientIds;
+      view.clients = p.clientIds.map((id) => db.users.find((u) => u.id === id)).filter(Boolean).map(publicUser);
+    }
+    return view;
+  }
+
+  function projectSummary(p, user) {
+    const { stages } = p;
+    const active = stages.find((s) => s.status === "active");
+    return {
+      id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
+      progress: progress(stages),
+      stage: active ? active.title : stages.every((s) => s.status === "done") && stages.length ? "Готово" : "",
+      ...(user.role === "admin" ? { clients: p.clientIds.map((id) => db.users.find((u) => u.id === id)?.name).filter(Boolean) } : {}),
+    };
+  }
+
+  const canSee = (user, p) => user.role === "admin" || p.clientIds.includes(user.id);
+  function findProject(user, id) {
+    const p = db.projects.find((x) => x.id === id);
+    if (!p || !canSee(user, p)) fail(404, "not_found");
+    return p;
+  }
+  const touch = (p) => { p.updatedAt = new Date(now()).toISOString(); };
+
+  /* ---------- Вход ---------- */
+  route("POST", "/api/login", async ({ body, ip }) => {
+    const login = str(body.login, 64).toLowerCase();
+    const password = typeof body.password === "string" ? body.password : "";
+    if (limiter.blocked(ip, login && `login:${login}`)) fail(429, "rate");
+    const user = db.users.find((u) => u.login === login);
+    if (!user || user.disabled || !password || !checkPassword(password, user.password)) {
+      limiter.fail(ip, login && `login:${login}`);
+      fail(401, "credentials");
+    }
+    limiter.reset(`login:${login}`);
+    const { token, maxAge } = sessions.create(user.id);
+    return { body: { user: publicUser(user) }, cookie: { token, maxAge } };
+  }, "public");
+
+  route("POST", "/api/logout", async ({ token }) => {
+    sessions.destroy(token);
+    return { body: { ok: true }, cookie: { token: "", maxAge: 0 } };
+  }, "public");
+
+  route("GET", "/api/me", async ({ user }) => ({ body: { user: user ? publicUser(user) : null } }), "optional");
+
+  route("POST", "/api/password", async ({ user, body }) => {
+    const next = typeof body.next === "string" ? body.next : "";
+    if (!checkPassword(typeof body.current === "string" ? body.current : "", user.password)) fail(400, "current");
+    if (next.length < 8 || next.length > 200) fail(400, "weak");
+    user.password = hashPassword(next);
+    // Все устройства выходят, а это получает новую сессию.
+    db.sessions = db.sessions.filter((s) => s.userId !== user.id);
+    return { body: { ok: true }, cookie: sessions.create(user.id) };
+  });
+
+  /* ---------- Проекты: просмотр ---------- */
+  route("GET", "/api/projects", async ({ user }) => ({
+    body: { projects: db.projects.filter((p) => canSee(user, p)).map((p) => projectSummary(p, user)) },
+  }));
+
+  route("GET", "/api/projects/:id", async ({ user, params }) => ({
+    body: { project: projectView(findProject(user, params.id), user) },
+  }));
+
+  route("GET", "/api/projects/:id/files/:fileId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    const meta = p.files.find((f) => f.id === params.fileId);
+    const data = meta && store.readFile(meta.id);
+    if (!data) fail(404, "not_found");
+    const inline = INLINE_TYPES.has(meta.type);
+    return {
+      raw: data,
+      headers: {
+        "Content-Type": inline ? meta.type : "application/octet-stream",
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
+        "Cache-Control": "private, no-store",
+      },
+    };
+  });
+
+  /* ---------- Админка: клиенты ---------- */
+  route("GET", "/api/admin/users", async () => ({ body: { users: db.users.map(publicUser) } }), "admin");
+
+  route("POST", "/api/admin/users", async ({ body }) => {
+    const user = {
+      id: store.id(),
+      login: loginOf(body.login),
+      name: required(str(body.name, 120), "name"),
+      company: str(body.company, 120),
+      role: body.role === "admin" ? "admin" : "client",
+      createdAt: new Date(now()).toISOString(),
+    };
+    if (db.users.some((u) => u.login === user.login)) fail(409, "login_taken");
+    const password = generatePassword();
+    user.password = hashPassword(password);
+    db.users.push(user);
+    store.save();
+    return { status: 201, body: { user: publicUser(user), password } };
+  }, "admin");
+
+  route("PATCH", "/api/admin/users/:id", async ({ user: me, params, body }) => {
+    const user = db.users.find((u) => u.id === params.id) || fail(404, "not_found");
+    if ("name" in body) user.name = required(str(body.name, 120), "name");
+    if ("company" in body) user.company = str(body.company, 120);
+    if ("login" in body) {
+      const login = loginOf(body.login);
+      if (db.users.some((u) => u.login === login && u.id !== user.id)) fail(409, "login_taken");
+      user.login = login;
+    }
+    if ("disabled" in body) {
+      if (user.id === me.id) fail(400, "self");
+      user.disabled = Boolean(body.disabled);
+      if (user.disabled) sessions.destroyAllFor(user.id);
+    }
+    store.save();
+    return { body: { user: publicUser(user) } };
+  }, "admin");
+
+  route("POST", "/api/admin/users/:id/password", async ({ params }) => {
+    const user = db.users.find((u) => u.id === params.id) || fail(404, "not_found");
+    const password = generatePassword();
+    user.password = hashPassword(password);
+    sessions.destroyAllFor(user.id);
+    return { body: { password } };
+  }, "admin");
+
+  route("DELETE", "/api/admin/users/:id", async ({ user: me, params }) => {
+    if (params.id === me.id) fail(400, "self");
+    const i = db.users.findIndex((u) => u.id === params.id);
+    if (i < 0) fail(404, "not_found");
+    db.users.splice(i, 1);
+    for (const p of db.projects) p.clientIds = p.clientIds.filter((id) => id !== params.id);
+    sessions.destroyAllFor(params.id); // сохраняет базу
+    return { body: { ok: true } };
+  }, "admin");
+
+  /* ---------- Админка: проекты ---------- */
+  route("POST", "/api/admin/projects", async ({ body }) => {
+    const p = {
+      id: store.id(),
+      title: required(str(body.title, 160), "title"),
+      summary: str(body.summary, 600),
+      clientIds: clientIdsOf(body.clientIds ?? []),
+      stages: DEFAULT_STAGES.map((title, i) => ({ id: store.id(), title, status: i === 0 ? "active" : "todo", start: "", end: "", note: "" })),
+      payments: [],
+      updates: [],
+      files: [],
+      createdAt: new Date(now()).toISOString(),
+    };
+    touch(p);
+    db.projects.push(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, { role: "admin" }) } };
+  }, "admin");
+
+  // Этапы и оплаты редактируются целиком: форма в админке отправляет весь список.
+  route("PATCH", "/api/admin/projects/:id", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    if ("title" in body) p.title = required(str(body.title, 160), "title");
+    if ("summary" in body) p.summary = str(body.summary, 600);
+    if ("clientIds" in body) p.clientIds = clientIdsOf(body.clientIds);
+    if ("stages" in body) p.stages = list(body.stages, 20).map((s) => ({
+      id: idOf(s.id),
+      title: required(str(s.title, 80), "stage_title"),
+      status: STATUSES.includes(s.status) ? s.status : "todo",
+      start: dateOf(s.start),
+      end: dateOf(s.end),
+      note: str(s.note, 300),
+    }));
+    if ("payments" in body) p.payments = list(body.payments, 30).map((x) => ({
+      id: idOf(x.id),
+      title: required(str(x.title, 120), "payment_title"),
+      amount: amountOf(x.amount),
+      due: dateOf(x.due),
+      paid: Boolean(x.paid),
+      paidAt: x.paid ? dateOf(x.paidAt) || new Date(now()).toISOString().slice(0, 10) : "",
+    }));
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("DELETE", "/api/admin/projects/:id", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    for (const f of p.files) store.deleteFile(f.id);
+    db.projects.splice(db.projects.indexOf(p), 1);
+    store.save();
+    return { body: { ok: true } };
+  }, "admin");
+
+  route("POST", "/api/admin/projects/:id/updates", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    const update = {
+      id: store.id(),
+      date: dateOf(body.date) || new Date(now()).toISOString().slice(0, 10),
+      title: required(str(body.title, 160), "update_title"),
+      text: str(body.text, 5000),
+      links: list(body.links ?? [], 10).map((l) => ({ label: str(l.label, 80), url: urlOf(l.url) })),
+    };
+    p.updates.push(update);
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("DELETE", "/api/admin/projects/:id/updates/:updateId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    p.updates = p.updates.filter((u) => u.id !== params.updateId);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  // Файл приходит телом запроса как есть, имя — в заголовке X-Filename (encodeURIComponent).
+  route("POST", "/api/admin/projects/:id/files", async ({ user, params, req }) => {
+    const p = findProject(user, params.id);
+    let name;
+    try {
+      name = decodeURIComponent(String(req.headers["x-filename"] || ""));
+    } catch {
+      fail(400, "filename");
+    }
+    name = name.replace(/[\\/\0\r\n]/g, "_").trim().slice(0, 160);
+    if (!name) fail(400, "filename");
+    const data = await readBody(req, FILE_LIMIT);
+    if (!data.length) fail(400, "empty");
+    const meta = {
+      id: store.id(),
+      name,
+      size: data.length,
+      type: String(req.headers["content-type"] || "application/octet-stream").split(";")[0].trim().slice(0, 100),
+      uploadedAt: new Date(now()).toISOString(),
+    };
+    store.writeFile(meta.id, data);
+    p.files.push(meta);
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  }, "admin", { rawBody: true });
+
+  route("DELETE", "/api/admin/projects/:id/files/:fileId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    const meta = p.files.find((f) => f.id === params.fileId) || fail(404, "not_found");
+    store.deleteFile(meta.id);
+    p.files = p.files.filter((f) => f !== meta);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  /* ---------- Проверка полей ---------- */
+  function str(v, max) {
+    return typeof v === "string" ? v.trim().slice(0, max) : "";
+  }
+  function required(v, field) {
+    if (!v) fail(400, `required:${field}`);
+    return v;
+  }
+  function loginOf(v) {
+    const login = str(v, 64).toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._@-]{2,63}$/.test(login)) fail(400, "login");
+    return login;
+  }
+  function list(v, max) {
+    if (!Array.isArray(v) || v.length > max) fail(400, "list");
+    return v.map((x) => (x && typeof x === "object" ? x : fail(400, "list")));
+  }
+  function dateOf(v) {
+    if (v === undefined || v === null || v === "") return "";
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) fail(400, "date");
+    return v;
+  }
+  function amountOf(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > 1e10) fail(400, "amount");
+    return Math.round(n);
+  }
+  function urlOf(v) {
+    const url = str(v, 500);
+    if (!/^https?:\/\/[^\s]+$/i.test(url)) fail(400, "url");
+    return url;
+  }
+  function idOf(v) {
+    return typeof v === "string" && /^[\w-]{6,32}$/.test(v) ? v : store.id();
+  }
+  function clientIdsOf(v) {
+    if (!Array.isArray(v)) fail(400, "clientIds");
+    const ids = [...new Set(v)];
+    if (!ids.every((id) => db.users.some((u) => u.id === id && u.role === "client"))) fail(400, "clientIds");
+    return ids;
+  }
+
+  /* ---------- HTTP ---------- */
+  const staticCache = new Map();
+  function staticFile(urlPath) {
+    let bases;
+    if (urlPath === "/favicon.svg" || urlPath.startsWith("/fonts/")) {
+      bases = [siteDir, publicDir]; // шрифты и иконку берём с сайта, чтобы не держать копии
+    } else if (urlPath === "/app.css" || urlPath === "/app.js") {
+      bases = [publicDir];
+    } else if (!path.extname(urlPath)) {
+      urlPath = "/index.html"; // маршруты интерфейса: /, /login, /p/…, /admin…
+      bases = [publicDir];
+    } else {
+      return null;
+    }
+    for (const base of bases.filter(Boolean)) {
+      const root = path.resolve(base);
+      const file = path.resolve(root, `.${urlPath}`);
+      if (!file.startsWith(root + path.sep)) continue;
+      const entry = loadStatic(file);
+      if (entry) return entry;
+    }
+    return null;
+  }
+
+  function loadStatic(file) {
+    try {
+      const stat = fs.statSync(file);
+      const hit = staticCache.get(file);
+      if (hit && hit.mtime === stat.mtimeMs) return hit;
+      const data = fs.readFileSync(file);
+      const entry = {
+        data,
+        mtime: stat.mtimeMs,
+        etag: `"${crypto.createHash("sha1").update(data).digest("base64url")}"`,
+        type: STATIC_TYPES[path.extname(file)] || "application/octet-stream",
+      };
+      staticCache.set(file, entry);
+      return entry;
+    } catch {
+      return null;
+    }
+  }
+
+  function send(res, status, headers, body) {
+    res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
+    res.end(body);
+  }
+  const sendJson = (res, status, body, extra = {}) => send(res, status, {
+    "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...extra,
+  }, JSON.stringify(body));
+
+  function cookieHeader({ token, maxAge }) {
+    return `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(maxAge)}${secureCookie ? "; Secure" : ""}`;
+  }
+
+  return async function handle(req, res) {
+    const url = new URL(req.url, "http://local");
+    const ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress || "");
+    try {
+      if (!url.pathname.startsWith("/api/")) {
+        if (req.method !== "GET" && req.method !== "HEAD") return sendJson(res, 405, { error: "method" });
+        const file = staticFile(url.pathname);
+        if (!file) return send(res, 404, { "Content-Type": "text/plain; charset=utf-8" }, "Not found");
+        const headers = { "Content-Type": file.type, "Cache-Control": "no-cache", ETag: file.etag };
+        if (req.headers["if-none-match"] === file.etag) return send(res, 304, headers);
+        return send(res, 200, headers, req.method === "HEAD" ? undefined : file.data);
+      }
+
+      const match = routes.map((r) => ({ r, m: r.method === req.method && r.re.exec(url.pathname) })).find((x) => x.m);
+      if (!match) return sendJson(res, 404, { error: "not_found" });
+      const { r, m } = match;
+
+      // Чужие сайты не могут слать нам изменения от имени вошедшего пользователя.
+      const origin = req.headers.origin;
+      if (req.method !== "GET" && origin && origins.length && !origins.includes(origin)) fail(403, "origin");
+
+      const token = parseCookies(req.headers.cookie).sid || "";
+      const user = sessions.user(token);
+      if (r.access !== "public" && r.access !== "optional" && !user) fail(401, "auth");
+      if (r.access === "admin" && user.role !== "admin") fail(403, "admin");
+
+      let body = {};
+      if (!r.rawBody && req.method !== "GET" && req.method !== "DELETE") {
+        const raw = await readBody(req, JSON_LIMIT);
+        if (raw.length) {
+          try {
+            body = JSON.parse(raw.toString("utf8"));
+          } catch {
+            fail(400, "json");
+          }
+          if (!body || typeof body !== "object" || Array.isArray(body)) fail(400, "json");
+        }
+      }
+
+      const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+      const out = await r.handler({ req, user, token, body, params, ip });
+      if (out.raw) return send(res, 200, out.headers, out.raw);
+      const extra = out.cookie ? { "Set-Cookie": cookieHeader(out.cookie) } : {};
+      return sendJson(res, out.status || 200, out.body, extra);
+    } catch (err) {
+      if (err instanceof HttpError) return sendJson(res, err.status, { error: err.code });
+      log.error(err);
+      return sendJson(res, 500, { error: "server" });
+    }
+  };
+}
+
+function progress(stages) {
+  if (!stages.length) return 0;
+  const done = stages.reduce((n, s) => n + (s.status === "done" ? 1 : s.status === "active" ? 0.5 : 0), 0);
+  return Math.round((done / stages.length) * 100);
+}
+
+function parseCookies(header = "") {
+  const out = {};
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let over = false;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (over) return; // дочитываем вхолостую, чтобы клиент получил ответ 413, а не обрыв
+      if (size > limit) {
+        over = true;
+        chunks.length = 0;
+        reject(new HttpError(413, "too_large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => { if (!over) resolve(Buffer.concat(chunks)); });
+    req.on("error", reject);
+  });
+}
+
+module.exports = { createApp, progress, hashPassword, generatePassword };
