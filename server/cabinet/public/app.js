@@ -355,7 +355,7 @@
       const tabs = h("nav", { class: "subtabs", "aria-label": "Разделы проекта" },
         link(base, { "aria-current": tab === "overview" ? "page" : null }, "Обзор"),
         link(`${base}/tasks`, { "aria-current": tab === "tasks" ? "page" : null },
-          admin ? "Задачи для заказчика" : "Задачи для вас",
+          "Задачи для вас",
           open.length ? h("span", { class: "badge", text: String(open.length) }) : null));
       root.replaceChildren(...shell(head, tabs, tab === "tasks" ? tasksTab(p, toggle) : overviewTab(p, open), contactBlock()));
     }
@@ -371,7 +371,7 @@
       open.length
         ? h("section", { class: "notice" },
           h("p", { class: "notice__title" },
-            me.role === "admin" ? "У заказчика " : "Нужно от вас: ",
+            "Нужно от вас: ",
             h("b", { text: `${open.length} ${plural(open.length, "задача", "задачи", "задач")}` }),
             h("small", { text: nearest ? `Ближайший срок: ${fmtDate(nearest.due)}` : "Без срока" })),
           btn("Открыть задачи", { href: `/p/${p.id}/tasks`, small: true }))
@@ -402,9 +402,7 @@
   function tasksTab(p, onToggle) {
     const done = p.tasks.filter((t) => t.done);
     return h("section", { class: "tasks-page" },
-      h("p", { class: "lead tasks-lead", text: me.role === "admin"
-        ? "Что нужно от заказчика. Он отмечает задачи сам, отметку видно здесь."
-        : "Что нужно от вас, чтобы мы шли по срокам. Когда сделаете, отметьте задачу, и мы увидим." }),
+      h("p", { class: "lead tasks-lead", text: "Что нужно от вас, чтобы мы шли по срокам. Когда сделаете, отметьте задачу, и мы увидим." }),
       tasksList(p.tasks.filter((t) => !t.done), { onToggle, empty: "Сейчас от вас ничего не нужно. Как только понадобится, задача появится здесь." }),
       done.length ? [h("p", { class: "tasks-done-title mono", text: `Выполнено: ${done.length}` }), tasksList(done, { onToggle })] : null);
   }
