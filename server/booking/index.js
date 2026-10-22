@@ -1,32 +1,47 @@
 "use strict";
-/* Запись на звонок: создаёт встречу в Яндекс Телемосте и пишет команде и клиенту.
+/* Запись на звонок: занимает слот, сообщает команде в Telegram и/или на почту,
+   по возможности создаёт встречу в Яндекс Телемосте и пишет клиенту.
    Работает как Yandex Cloud Function (exports.handler) или обычным сервером (server.js).
 
+   GET  — занятые слоты { busy: [ISO-время начала] }, чтобы форма их не показывала.
+   POST — заявка. 409 — слот занят или вне рабочего времени, 429 — слишком много заявок с IP.
+
    Переменные окружения:
-     TELEMOST_TOKEN  OAuth-токен Яндекса с правом telemost-api:conferences.create
      ALLOWED_ORIGIN  с каких сайтов принимать заявки, через запятую: https://indata.group
-     TEAM_EMAIL      куда присылать заявки
-     SMTP_USER       ящик-отправитель на Яндекс 360, например hello@indata.group
-     SMTP_PASS       пароль приложения для этого ящика
+     BOOKINGS_FILE   JSON-файл с заявками; без него занятые слоты живут до перезапуска
+     TG_BOT_TOKEN    бот, который присылает заявки команде
+     TG_CHAT_ID      чат, куда он их присылает
+     TEAM_EMAIL      почта для заявок (нужны SMTP_*)
+     SMTP_USER       ящик-отправитель, например hello@indata.group
+     SMTP_PASS       пароль этого ящика
      SMTP_HOST       по умолчанию smtp.yandex.ru
      SMTP_PORT       по умолчанию 465
-   Без SMTP_* письма не отправляются, заявка остаётся только в логах функции. */
+     TELEMOST_TOKEN  OAuth-токен Яндекса с правом telemost-api:conferences.create (необязательно)
+   Нужен хотя бы один канал для команды: Telegram или почта. Без SMTP_* клиенту письмо не уходит. */
 
 const TELEMOST_API = "https://cloud-api.yandex.net/v1/telemost-api/conferences";
 const TITLE = "Знакомство с InData";
 const DURATION_MIN = 15;
 const MAX_AHEAD_DAYS = 31;
+const HOURS_MSK = [10, 19];   // рабочие часы по Москве, как в call.js
+const MSK_OFFSET = 3;         // Москва — UTC+3 круглый год
+const RATE = { max: 5, windowMin: 60 };
 const MIN = 60_000;
 
 function createHandler({
   env = process.env,
   fetchImpl = fetch,
   sendMail = smtpSender(env),
+  sendTelegram = telegramSender(env, fetchImpl),
+  store = createStore(env.BOOKINGS_FILE),
   now = Date.now,
   log = console,
 } = {}) {
   const origins = (env.ALLOWED_ORIGIN || "").split(",").map((s) => s.trim()).filter(Boolean);
   const mailOn = Boolean(env.SMTP_USER && env.SMTP_PASS);
+  const tgOn = Boolean(env.TG_BOT_TOKEN && env.TG_CHAT_ID);
+  const teamMailOn = mailOn && Boolean(env.TEAM_EMAIL);
+  const hits = new Map(); // IP → время последних заявок
 
   async function createConference() {
     if (!env.TELEMOST_TOKEN) throw new Error("не задан TELEMOST_TOKEN");
@@ -48,20 +63,28 @@ function createHandler({
     const allowed = origins.length === 0 || origins.includes(origin);
     const cors = {
       "Access-Control-Allow-Origin": allowed ? origin || "*" : origins[0],
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Max-Age": "86400",
       Vary: "Origin",
     };
     const reply = (statusCode, body) => ({
       statusCode,
-      headers: { ...cors, "Content-Type": "application/json; charset=utf-8" },
+      headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
       body: body === undefined ? "" : JSON.stringify(body),
     });
 
     if (event.httpMethod === "OPTIONS") return reply(204);
+    // Отдаём только время начала, без имён и контактов.
+    if (event.httpMethod === "GET") return reply(200, { busy: store.busy(now()) });
     if (event.httpMethod !== "POST") return reply(405, { error: "method" });
     if (!allowed) return reply(403, { error: "origin" });
+    if (!tgOn && !teamMailOn) {
+      log.error("Не настроен ни Telegram, ни почта: команда не узнает о заявке");
+      return reply(503, { error: "config" });
+    }
+    const t = now();
+    if (limited(clientIp(event), t)) return reply(429, { error: "rate" });
 
     let data;
     try {
@@ -72,27 +95,48 @@ function createHandler({
     }
     const booking = parseBooking(data);
     if (!booking) return reply(400, { error: "invalid" });
-    const t = now();
     if (booking.start < t || booking.start > t + MAX_AHEAD_DAYS * 24 * 60 * MIN) return reply(409, { error: "slot" });
+    if (!inWorkHours(booking.start) || store.taken(booking.start)) return reply(409, { error: "slot" });
 
-    // Заявка остаётся в логах функции, даже если почта не настроена или не сработала.
+    // Слот занимаем сразу, до первых await: две одновременные заявки на одно время не пройдут.
+    booking.createdAt = new Date(t).toISOString();
+    booking.startMsk = `${when(booking.start, "Europe/Moscow")} МСК`;
+    store.add(booking);
     log.info(JSON.stringify({ booking }));
 
     let joinUrl = null;
-    try {
-      joinUrl = await createConference();
-    } catch (err) {
-      log.error(`Телемост: ${err.message}`);
+    if (env.TELEMOST_TOKEN) {
+      try {
+        joinUrl = await createConference();
+        booking.joinUrl = joinUrl;
+        store.save();
+      } catch (err) {
+        log.error(`Телемост: ${err.message}`);
+      }
     }
 
-    if (mailOn && env.TEAM_EMAIL) {
+    const letter = teamLetter(booking, joinUrl, env);
+    let told = false;
+    if (tgOn) {
       try {
-        await sendMail(teamLetter(booking, joinUrl, env));
+        await sendTelegram(`${letter.subject}\n\n${letter.text}`);
+        told = true;
       } catch (err) {
-        // Команда не узнала о заявке — честно просим клиента отправить ещё раз.
-        log.error(`Письмо команде: ${err.message}`);
-        return reply(502, { error: "mail" });
+        log.error(`Telegram: ${err.message}`);
       }
+    }
+    if (teamMailOn) {
+      try {
+        await sendMail(letter);
+        told = true;
+      } catch (err) {
+        log.error(`Письмо команде: ${err.message}`);
+      }
+    }
+    if (!told) {
+      // Команда не узнала о заявке — освобождаем слот и честно просим отправить ещё раз.
+      store.remove(booking);
+      return reply(502, { error: "notify" });
     }
 
     let emailed = false;
@@ -106,6 +150,60 @@ function createHandler({
     }
 
     return reply(200, { ok: true, joinUrl, emailed });
+  };
+
+  function limited(ip, t) {
+    if (!ip) return false;
+    const recent = (hits.get(ip) || []).filter((x) => t - x < RATE.windowMin * MIN);
+    const over = recent.length >= RATE.max;
+    if (!over) recent.push(t);
+    hits.set(ip, recent);
+    return over;
+  }
+}
+
+// Будни, с 10:00 до 19:00 по Москве; праздники отсекает форма.
+function inWorkHours(start) {
+  const msk = new Date(start + MSK_OFFSET * 60 * MIN);
+  const day = msk.getUTCDay();
+  const minute = msk.getUTCHours() * 60 + msk.getUTCMinutes();
+  return day >= 1 && day <= 5 && minute >= HOURS_MSK[0] * 60 && minute + DURATION_MIN <= HOURS_MSK[1] * 60;
+}
+
+function clientIp(event) {
+  return header(event, "x-real-ip") || event.ip || event.requestContext?.identity?.sourceIp || "";
+}
+
+/* ---------- Заявки ---------- */
+// Простое хранилище в JSON-файле: заявок немного, процесс один.
+function createStore(file) {
+  const fs = require("node:fs");
+  let items = [];
+  if (file) {
+    try {
+      items = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+  }
+  const save = () => {
+    if (!file) return;
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(items, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  };
+  return {
+    taken: (start) => items.some((b) => b.start === start),
+    busy: (t) => items.filter((b) => b.start > t).map((b) => new Date(b.start).toISOString()),
+    add(booking) {
+      items.push(booking);
+      save();
+    },
+    remove(booking) {
+      items = items.filter((b) => b !== booking);
+      save();
+    },
+    save,
   };
 }
 
@@ -243,6 +341,19 @@ function fold(line) {
   }
   parts.push(chunk);
   return parts.join("\r\n ");
+}
+
+/* ---------- Telegram ---------- */
+function telegramSender(env, fetchImpl) {
+  return async (text) => {
+    const res = await fetchImpl(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: env.TG_CHAT_ID, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text().catch(() => "")}`.trim());
+  };
 }
 
 /* ---------- Почта ---------- */

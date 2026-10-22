@@ -1,7 +1,7 @@
 (() => {
   /* ---------- Запись на звонок: календарь → время → форма ---------- */
-  // Свободное время считается на клиенте из рабочих часов по Москве,
-  // заявка уходит POST-запросом (JSON) на адрес из data-endpoint формы.
+  // Свободное время считается на клиенте из рабочих часов по Москве, минус занятые слоты
+  // (GET на адрес из data-endpoint формы). Заявка уходит туда же POST-запросом (JSON).
   const booker = document.getElementById("booker");
   if (!booker) return;
 
@@ -77,6 +77,7 @@
   let view;                 // показанный месяц { y, m }
   let picked = null;        // выбранный день
   let slot = null;          // выбранное время
+  let busy = new Set();     // занятые слоты, мс
 
   function localZone() {
     try {
@@ -135,7 +136,7 @@
       if (HOLIDAYS.has(`${pad(day.getUTCMonth() + 1)}-${pad(day.getUTCDate())}`)) continue;
       for (let m = HOURS[0] * 60; m + DURATION <= HOURS[1] * 60; m += STEP) {
         const t = day.getTime() + (m - MSK * 60) * MIN;
-        if (t >= earliest) slots.push(t);
+        if (t >= earliest && !busy.has(t)) slots.push(t);
       }
     }
     return slots;
@@ -152,6 +153,27 @@
     if (!byDay.has(picked)) picked = byDay.keys().next().value ?? null;
     const base = keyToDate(picked ?? dayKey(Date.now()));
     view = { y: base.getUTCFullYear(), m: base.getUTCMonth() };
+  }
+
+  function refresh() {
+    regroup();
+    renderMonth();
+    renderSlots();
+  }
+
+  async function loadBusy() {
+    const url = form.dataset.endpoint;
+    if (!url) return;
+    try {
+      const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return;
+      const { busy: list } = await res.json();
+      busy = new Set(list.map(Date.parse));
+      refresh();
+    } catch (err) {
+      // Без списка занятых форма всё равно работает: занятое время отклонит сервер (409).
+      console.warn("Не удалось загрузить занятое время:", err);
+    }
   }
 
   /* ---------- Календарь ---------- */
@@ -354,9 +376,7 @@
 
   tzSelect.addEventListener("change", () => {
     tz = tzSelect.value;
-    regroup();
-    renderMonth();
-    renderSlots();
+    refresh();
     if (slot !== null) fillWhen();
   });
 
@@ -389,13 +409,13 @@
       console.error(err);
       formError.textContent = err.code === "slot" ? "Это время уже недоступно — вернитесь и выберите другое." : ERROR_TEXT;
       formError.hidden = false;
+      if (err.code === "slot") loadBusy();
     } finally {
       setBusy(false);
     }
   });
 
   fillZones();
-  regroup();
-  renderMonth();
-  renderSlots();
+  refresh();
+  loadBusy();
 })();
