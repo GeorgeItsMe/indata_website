@@ -1068,9 +1068,32 @@
     const name = h("input", { class: "input", required: true, maxlength: "120", placeholder: "Иван Петров" });
     const company = h("input", { class: "input", maxlength: "120", placeholder: "Empire Poker Club" });
     const login = h("input", { class: "input", required: true, maxlength: "64", autocapitalize: "none", spellcheck: "false", placeholder: "empire" });
+    const contact = h("input", { class: "input", maxlength: "120", placeholder: "@username или +7 900 000-00-00" });
     const role = h("select", { class: "select" }, h("option", { value: "client", text: "Клиент" }), h("option", { value: "admin", text: "Сотрудник InData (админ)" }));
+    const roleField = h("label", { class: "field" }, h("span", { text: "Роль" }), role);
     const error = h("p", { class: "form__error", hidden: true });
+    const formTitle = h("h2", { class: "h2", text: "Новый клиент" });
     const create = btn("Создать и выдать пароль", { type: "submit" });
+    let editing = null; // клиент, которого правим; null — создаём нового
+
+    function openForm(user = null) {
+      editing = user;
+      form.reset();
+      error.hidden = true;
+      formTitle.textContent = user ? `Клиент: ${user.name}` : "Новый клиент";
+      setBtnLabel(create, user ? "Сохранить" : "Создать и выдать пароль");
+      roleField.hidden = Boolean(user);
+      if (user) {
+        name.value = user.name;
+        company.value = user.company;
+        login.value = user.login;
+        contact.value = user.contact;
+      }
+      form.hidden = false;
+      form.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      name.focus({ preventScroll: true });
+    }
+
     const form = h("form", {
       class: "card form",
       hidden: true,
@@ -1078,13 +1101,22 @@
         e.preventDefault();
         error.hidden = true;
         create.disabled = true;
+        const fields = { name: name.value, company: company.value, login: login.value, contact: contact.value };
         try {
-          const res = await api("POST", "/api/admin/users", { name: name.value, company: company.value, login: login.value, role: role.value });
-          users.push(res.user);
-          form.reset();
-          form.hidden = true;
-          renderTable();
-          showSecret(res.user, res.password, true);
+          if (editing) {
+            const { user } = await api("PATCH", `/api/admin/users/${editing.id}`, fields);
+            Object.assign(editing, user);
+            form.hidden = true;
+            renderTable();
+            toast("Сохранено");
+          } else {
+            const res = await api("POST", "/api/admin/users", { ...fields, role: role.value });
+            users.push(res.user);
+            form.reset();
+            form.hidden = true;
+            renderTable();
+            showSecret(res.user, res.password, true);
+          }
         } catch (err) {
           error.textContent = errorText(err);
           error.hidden = false;
@@ -1093,13 +1125,14 @@
         }
       },
     },
-    h("h2", { class: "h2", text: "Новый клиент" }),
+    formTitle,
     h("div", { class: "grid-2" },
       h("label", { class: "field" }, h("span", { text: "Имя" }), name),
       h("label", { class: "field" }, h("span", { text: "Компания" }), company)),
     h("div", { class: "grid-2" },
       h("label", { class: "field" }, h("span", { text: "Логин: латиница, цифры, точка или дефис" }), login),
-      h("label", { class: "field" }, h("span", { text: "Роль" }), role)),
+      h("label", { class: "field" }, h("span", { text: "Telegram или телефон" }), contact)),
+    roleField,
     error,
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
 
@@ -1116,9 +1149,10 @@
         };
         return h("tr", { class: u.disabled ? "is-off" : null },
           h("td", {}, h("div", { text: u.name }), u.company ? h("small", { class: "muted", text: u.company }) : null),
-          h("td", { class: "mono", text: u.login }),
+          h("td", {}, h("div", { class: "mono", text: u.login }), u.contact ? h("small", { class: "muted", text: u.contact }) : null),
           h("td", { text: u.role === "admin" ? "Админ" : u.disabled ? "Заблокирован" : "Клиент" }),
           h("td", {}, self ? h("span", { class: "mono", text: "это вы" }) : h("div", { class: "actions" },
+            h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить ${u.name}`, text: "✎", onclick: () => openForm(u) }),
             btn("Новый пароль", {
               variant: "light", small: true,
               onclick: () => act(async () => {
@@ -1153,10 +1187,10 @@
     root.replaceChildren(...shell(
       h("div", { class: "project-head" },
         h("div", {}, h("span", { class: "eyebrow mono", text: "Админка" }), h("h1", { class: "h1", text: "Клиенты" })),
-        btn("Новый клиент", { onclick: () => { form.hidden = false; name.focus(); } })),
+        btn("Новый клиент", { onclick: () => openForm() })),
       h("div", { class: "stack mt-32" }, form, secretBox,
         h("div", { class: "card table-wrap" }, h("table", { class: "table" },
-          h("thead", {}, h("tr", {}, ["Имя", "Логин", "Роль", ""].map((t) => h("th", { text: t })))),
+          h("thead", {}, h("tr", {}, ["Имя", "Логин и контакт", "Роль", ""].map((t) => h("th", { text: t })))),
           tbody))),
     ));
   }

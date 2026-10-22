@@ -72,8 +72,11 @@ test("вход администратора и закрытые маршруты
 });
 
 test("админ заводит клиентов и проект", async () => {
-  const a = await admin("POST", "/api/admin/users", { name: "Иван", company: "Empire", login: "empire" });
+  const a = await admin("POST", "/api/admin/users", { name: "Иван", company: "Empire", login: "empire", contact: "@ivan" });
   assert.equal(a.status, 201);
+  assert.equal(a.json.user.contact, "@ivan");
+  const edited = await admin("PATCH", `/api/admin/users/${a.json.user.id}`, { contact: "+7 900 000-00-00", name: "Иван" });
+  assert.equal(edited.json.user.contact, "+7 900 000-00-00");
   assert.equal(a.json.password.length, 12);
   assert.equal((await admin("POST", "/api/admin/users", { name: "Дубль", login: "EMPIRE" })).status, 409);
   assert.equal((await admin("POST", "/api/admin/users", { name: "X", login: "a b" })).status, 400);

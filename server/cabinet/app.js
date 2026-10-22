@@ -56,7 +56,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   /* ---------- Представления ---------- */
   const publicUser = (u) => ({
-    id: u.id, login: u.login, name: u.name, company: u.company || "", role: u.role,
+    id: u.id, login: u.login, name: u.name, company: u.company || "", contact: u.contact || "", role: u.role,
     disabled: Boolean(u.disabled), createdAt: u.createdAt,
   });
 
@@ -162,6 +162,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       login: loginOf(body.login),
       name: required(str(body.name, 120), "name"),
       company: str(body.company, 120),
+      contact: str(body.contact, 120),
       role: body.role === "admin" ? "admin" : "client",
       createdAt: new Date(now()).toISOString(),
     };
@@ -177,6 +178,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const user = db.users.find((u) => u.id === params.id) || fail(404, "not_found");
     if ("name" in body) user.name = required(str(body.name, 120), "name");
     if ("company" in body) user.company = str(body.company, 120);
+    if ("contact" in body) user.contact = str(body.contact, 120);
     if ("login" in body) {
       const login = loginOf(body.login);
       if (db.users.some((u) => u.login === login && u.id !== user.id)) fail(409, "login_taken");
