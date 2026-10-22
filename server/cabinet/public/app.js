@@ -353,9 +353,15 @@
       status,
       p.stages.length ? stagesStrip(p.stages) : null,
       h("div", { class: "columns" },
-        h("section", { "aria-labelledby": "feed-title" },
-          h("div", { class: "section-head" }, h("h2", { class: "h2", id: "feed-title", text: "Что нового" })),
-          feed(p.updates)),
+        h("div", { class: "stack stack--wide" },
+          p.meetings.length
+            ? h("section", { "aria-labelledby": "meetings-title" },
+              h("div", { class: "section-head" }, h("h2", { class: "h2", id: "meetings-title", text: "Созвоны и договорённости" })),
+              meetingsList(p.meetings))
+            : null,
+          h("section", { "aria-labelledby": "feed-title" },
+            h("div", { class: "section-head" }, h("h2", { class: "h2", id: "feed-title", text: "Что нового" })),
+            feed(p.updates))),
         h("div", { class: "stack" },
           paymentsCard(p.payments),
           filesCard(p))),
@@ -369,6 +375,29 @@
       h("p", { class: "stage__title", text: s.title }),
       h("p", { class: "stage__dates mono", text: [STATUS_LABELS[s.status], fmtRange(s.start, s.end)].filter(Boolean).join(" · ") }),
       s.note ? h("p", { class: "stage__note", text: s.note }) : null)));
+  }
+
+  // Созвон: дата, тема, запись и договорённости — по одной в строке, маркеры «-», «•» убираем.
+  function meetingsList(meetings, { onEdit = null, onDelete = null } = {}) {
+    if (!meetings.length) return h("p", { class: "empty", text: "Здесь появятся созвоны: ссылка на запись и о чём договорились." });
+    const admin = Boolean(onEdit || onDelete);
+    return h("div", { class: "meetings" }, meetings.map((m) => {
+      const points = m.agreements.split("\n").map((line) => line.replace(/^[\s•*–-]+/, "").trim()).filter(Boolean);
+      return h("article", { class: "meeting" },
+        h("div", { class: "meeting__head" },
+          h("div", {}, h("span", { class: "mono", text: fmtDate(m.date) }), h("h3", { class: "meeting__title", text: m.title })),
+          admin
+            ? h("div", { class: "row-tools" },
+              h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": "Изменить созвон", onclick: () => onEdit(m), text: "✎" }),
+              h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": "Удалить созвон", onclick: () => onDelete(m), text: "✕" }))
+            : null),
+        m.recordingUrl
+          ? h("a", { class: "chip chip--rec", href: m.recordingUrl, target: "_blank", rel: "noopener noreferrer" }, h("span", { class: "chip__play", "aria-hidden": "true" }), "Запись созвона ↗")
+          : admin ? h("span", { class: "mono", text: "Ссылки на запись пока нет" }) : null,
+        points.length
+          ? h("div", {}, h("p", { class: "meeting__label", text: "Договорились" }), h("ul", { class: "agreements" }, points.map((t) => h("li", { text: t }))))
+          : null);
+    }));
   }
 
   function feed(updates, onDelete = null) {
@@ -623,6 +652,78 @@
       }
     });
 
+    // Созвоны
+    let editingMeeting = null;
+    const meetingsBox = h("div");
+    const meetingTitle = h("input", { class: "input", maxlength: "160", placeholder: "Например, Старт проекта" });
+    const meetingDate = h("input", { class: "input", type: "date", value: today() });
+    const meetingUrl = h("input", { class: "input", type: "url", maxlength: "500", placeholder: "https://… ссылка на запись: Диск, Телемост, Zoom" });
+    const meetingText = h("textarea", { class: "textarea", maxlength: "5000", placeholder: "По одной договорённости в строке:\nСтарт работ 26 октября\nЭтап 1 сдаём до 25 ноября" });
+    const meetingError = h("p", { class: "form__error", hidden: true });
+    const meetingBtn = btn("Добавить созвон", { type: "submit" });
+    const meetingCancel = btn("Отмена", { variant: "light", hidden: true, onclick: () => resetMeetingForm() });
+    function resetMeetingForm() {
+      editingMeeting = null;
+      meetingForm.reset();
+      meetingDate.value = today();
+      meetingError.hidden = true;
+      setBtnLabel(meetingBtn, "Добавить созвон");
+      meetingCancel.hidden = true;
+    }
+    const renderMeetings = () => meetingsBox.replaceChildren(meetingsList(p.meetings, {
+      onEdit(m) {
+        editingMeeting = m.id;
+        meetingTitle.value = m.title;
+        meetingDate.value = m.date;
+        meetingUrl.value = m.recordingUrl;
+        meetingText.value = m.agreements;
+        setBtnLabel(meetingBtn, "Сохранить созвон");
+        meetingCancel.hidden = false;
+        meetingForm.scrollIntoView({ block: "center", behavior: "smooth" });
+        meetingTitle.focus({ preventScroll: true });
+      },
+      async onDelete(m) {
+        if (!confirm(`Удалить созвон «${m.title}»?`)) return;
+        try {
+          p = (await api("DELETE", `/api/admin/projects/${p.id}/meetings/${m.id}`)).project;
+          if (editingMeeting === m.id) resetMeetingForm();
+          renderMeetings();
+        } catch (err) {
+          toast(errorText(err));
+        }
+      },
+    }));
+    renderMeetings();
+    const meetingForm = h("form", {
+      class: "form",
+      async onsubmit(e) {
+        e.preventDefault();
+        meetingError.hidden = true;
+        meetingBtn.disabled = true;
+        const body = { title: meetingTitle.value, date: meetingDate.value, recordingUrl: meetingUrl.value.trim(), agreements: meetingText.value };
+        try {
+          p = (editingMeeting
+            ? await api("PATCH", `/api/admin/projects/${p.id}/meetings/${editingMeeting}`, body)
+            : await api("POST", `/api/admin/projects/${p.id}/meetings`, body)).project;
+          toast(editingMeeting ? "Созвон обновлён" : "Созвон добавлен");
+          resetMeetingForm();
+          renderMeetings();
+        } catch (err) {
+          meetingError.textContent = errorText(err);
+          meetingError.hidden = false;
+        } finally {
+          meetingBtn.disabled = false;
+        }
+      },
+    },
+    h("div", { class: "grid-2" },
+      h("label", { class: "field" }, h("span", { text: "Тема" }), meetingTitle),
+      h("label", { class: "field" }, h("span", { text: "Дата" }), meetingDate)),
+    h("label", { class: "field" }, h("span", { text: "Ссылка на запись" }), meetingUrl),
+    h("label", { class: "field" }, h("span", { text: "Договорённости, по одной в строке" }), meetingText),
+    meetingError,
+    h("div", { class: "actions" }, meetingBtn, meetingCancel));
+
     // Лента
     const feedBox = h("div");
     const renderFeed = () => feedBox.replaceChildren(feed(p.updates, async (u) => {
@@ -754,6 +855,10 @@
             onclick: () => { payments.push({ id: "", title: "", amount: "", due: "", paid: false, paidAt: "" }); renderPayments(); markDirty(); payRows.lastElementChild.querySelector("input").focus(); },
           }))),
         saveBar,
+        h("section", { class: "card stack" },
+          h("h2", { class: "h2", text: "Созвоны и договорённости" }),
+          meetingForm,
+          meetingsBox),
         h("section", { class: "card stack" },
           h("h2", { class: "h2", text: "Лента обновлений" }),
           postForm,

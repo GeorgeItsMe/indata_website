@@ -359,6 +359,33 @@ button, input, select, textarea { font: inherit; color: inherit; }
 a.chip:hover { background: #050505; color: #fff; }
 .post__del { position: absolute; right: 0; top: -4px; }
 
+/* Созвоны */
+.stack--wide { gap: 48px; }
+.meetings { display: flex; flex-direction: column; gap: 12px; }
+.meeting { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 20px 22px; border-radius: 10px; background: var(--soft); }
+.meeting > * { align-self: stretch; }
+.meeting > .chip, .meeting > .mono { align-self: flex-start; }
+.meeting__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.meeting__title { margin-top: 4px; font-size: 18px; line-height: 24px; letter-spacing: -0.02em; }
+.meeting .icon-btn:hover { background: #fff; }
+.chip--rec { background: #050505; color: #fff; padding: 7px 12px; }
+a.chip--rec:hover { background: var(--accent); }
+.chip__play { width: 0; height: 0; border-style: solid; border-width: 4px 0 4px 7px; border-color: transparent transparent transparent currentColor; }
+.meeting__label { margin-bottom: 8px; font-size: 13px; line-height: 18px; color: var(--muted); }
+.agreements { display: flex; flex-direction: column; gap: 8px; }
+.agreements li { position: relative; padding-left: 24px; font-size: 15px; line-height: 21px; font-weight: 400; color: #2a2a2a; }
+.agreements li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  width: 9px;
+  height: 5px;
+  border: solid var(--accent);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
 /* Оплаты */
 .money { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
 .money dt { font-size: 13px; color: var(--muted); }

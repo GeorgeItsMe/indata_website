@@ -1,6 +1,6 @@
 "use strict";
 /* Кабинет клиента InData (app.indata.group): API и раздача интерфейса.
-   Клиент видит свои проекты: этапы, ленту обновлений, оплаты и документы.
+   Клиент видит свои проекты: этапы, созвоны с договорённостями, ленту обновлений, оплаты и документы.
    Администратор заводит клиентов и проекты и ведёт их. */
 
 const fs = require("node:fs");
@@ -62,8 +62,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const view = {
       id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
       stages: p.stages, payments: p.payments,
-      // Свежие сверху; в один день выше та запись, что опубликована позже.
-      updates: p.updates.map((u, i) => [u, i]).sort(([a, i], [b, j]) => b.date.localeCompare(a.date) || j - i).map(([u]) => u),
+      updates: newestFirst(p.updates),
+      meetings: newestFirst(p.meetings || []),
       files: p.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt })),
     };
     if (user.role === "admin") {
@@ -215,6 +215,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       stages: DEFAULT_STAGES.map((title, i) => ({ id: store.id(), title, status: i === 0 ? "active" : "todo", start: "", end: "", note: "" })),
       payments: [],
       updates: [],
+      meetings: [],
       files: [],
       createdAt: new Date(now()).toISOString(),
     };
@@ -277,6 +278,41 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   route("DELETE", "/api/admin/projects/:id/updates/:updateId", async ({ user, params }) => {
     const p = findProject(user, params.id);
     p.updates = p.updates.filter((u) => u.id !== params.updateId);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  // Созвоны: дата, тема, ссылка на запись и договорённости (по одной в строке).
+  const meetingOf = (body, id) => ({
+    id,
+    date: dateOf(body.date) || new Date(now()).toISOString().slice(0, 10),
+    title: str(body.title, 160) || "Созвон",
+    recordingUrl: body.recordingUrl ? urlOf(body.recordingUrl) : "",
+    agreements: str(body.agreements, 5000),
+  });
+
+  route("POST", "/api/admin/projects/:id/meetings", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    p.meetings = [...(p.meetings || []), meetingOf(body, store.id())];
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("PATCH", "/api/admin/projects/:id/meetings/:meetingId", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    const i = (p.meetings || []).findIndex((m) => m.id === params.meetingId);
+    if (i < 0) fail(404, "not_found");
+    p.meetings[i] = meetingOf(body, params.meetingId);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "admin");
+
+  route("DELETE", "/api/admin/projects/:id/meetings/:meetingId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    p.meetings = (p.meetings || []).filter((m) => m.id !== params.meetingId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
@@ -466,6 +502,11 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       return sendJson(res, 500, { error: "server" });
     }
   };
+}
+
+// Свежие сверху; в один день выше та запись, что добавлена позже.
+function newestFirst(list) {
+  return list.map((x, i) => [x, i]).sort(([a, i], [b, j]) => b.date.localeCompare(a.date) || j - i).map(([x]) => x);
 }
 
 function progress(stages) {

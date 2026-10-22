@@ -151,6 +151,28 @@ test("клиент видит только свои проекты и тольк
   assert.equal((await b("GET", `/api/projects/${project.id}/files/${pdf.id}`)).status, 404);
 });
 
+test("созвоны: запись и договорённости", async () => {
+  const add = await admin("POST", `/api/admin/projects/${project.id}/meetings`, {
+    date: "2026-10-22", title: "Старт проекта", agreements: "Старт 26 октября\nЭтап 1 до 25 ноября",
+  });
+  assert.equal(add.status, 201, JSON.stringify(add.json));
+  const meeting = add.json.project.meetings[0];
+  assert.equal(meeting.recordingUrl, "");
+  assert.equal((await admin("PATCH", `/api/admin/projects/${project.id}/meetings/${meeting.id}`, { ...meeting, recordingUrl: "javascript:alert(1)" })).status, 400);
+  const upd = await admin("PATCH", `/api/admin/projects/${project.id}/meetings/${meeting.id}`, { ...meeting, recordingUrl: "https://disk.yandex.ru/i/rec" });
+  assert.equal(upd.json.project.meetings[0].recordingUrl, "https://disk.yandex.ru/i/rec");
+  assert.equal(upd.json.project.meetings[0].id, meeting.id);
+  await admin("POST", `/api/admin/projects/${project.id}/meetings`, { date: "2026-10-22", title: "Второй в тот же день" });
+
+  const seen = await clientA.call("GET", `/api/projects/${project.id}`);
+  assert.deepEqual(seen.json.project.meetings.map((m) => m.title), ["Второй в тот же день", "Старт проекта"]);
+  assert.equal((await clientA.call("POST", `/api/admin/projects/${project.id}/meetings`, { title: "x" })).status, 403);
+
+  const del = await admin("DELETE", `/api/admin/projects/${project.id}/meetings/${meeting.id}`);
+  assert.equal(del.json.project.meetings.length, 1);
+  assert.equal((await admin("PATCH", `/api/admin/projects/${project.id}/meetings/${meeting.id}`, meeting)).status, 404);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);
