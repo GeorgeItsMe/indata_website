@@ -22,6 +22,7 @@ const STATIC_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
 const SECURITY_HEADERS = {
@@ -450,7 +451,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   const staticCache = new Map();
   function staticFile(urlPath) {
     let bases;
-    if (urlPath === "/favicon.svg" || urlPath.startsWith("/fonts/")) {
+    if (urlPath === "/favicon.svg" || urlPath === "/favicon.ico" || urlPath.startsWith("/fonts/")) {
       bases = [siteDir, publicDir]; // шрифты и иконку берём с сайта, чтобы не держать копии
     } else if (urlPath === "/app.css" || urlPath === "/app.js") {
       bases = [publicDir];

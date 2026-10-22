@@ -247,6 +247,7 @@ test("интерфейс и статика", async () => {
     assert.match(r.headers.get("content-security-policy"), /default-src 'self'/);
   }
   assert.equal((await anon("GET", "/app.js")).status, 200);
+  assert.equal((await anon("GET", "/favicon.ico")).status, 404, "без SITE_DIR иконки сайта нет");
   assert.equal((await anon("GET", "/server.js")).status, 404);
   assert.equal((await anon("GET", "/fonts/../server.js")).status, 404);
   assert.equal((await anon("GET", "/data/db.json")).status, 404);
