@@ -11,6 +11,8 @@
      BOOKINGS_FILE   JSON-файл с заявками; без него занятые слоты живут до перезапуска
      TG_BOT_TOKEN    бот, который присылает заявки команде
      TG_CHAT_ID      чат, куда он их присылает
+     TG_PROXY        SOCKS5-прокси до Telegram, например socks5h://127.0.0.1:1081 (с российских серверов
+                     api.telegram.org напрямую недоступен)
      TEAM_EMAIL      почта для заявок (нужны SMTP_*)
      SMTP_USER       ящик-отправитель, например hello@indata.group
      SMTP_PASS       пароль этого ящика
@@ -345,15 +347,41 @@ function fold(line) {
 
 /* ---------- Telegram ---------- */
 function telegramSender(env, fetchImpl) {
+  const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`;
   return async (text) => {
-    const res = await fetchImpl(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: env.TG_CHAT_ID, text, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text().catch(() => "")}`.trim());
+    const body = JSON.stringify({ chat_id: env.TG_CHAT_ID, text, disable_web_page_preview: true });
+    const res = env.TG_PROXY
+      ? await postViaSocks(url, body, env.TG_PROXY)
+      : await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(8000),
+      }).then(async (r) => ({ status: r.status, text: await r.text().catch(() => "") }));
+    if (res.status !== 200) throw new Error(`HTTP ${res.status} ${res.text}`.trim());
   };
+}
+
+// fetch в Node не умеет SOCKS, поэтому через прокси идём обычным https.request.
+function postViaSocks(url, body, proxy) {
+  const { SocksProxyAgent } = require("socks-proxy-agent");
+  const https = require("node:https");
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method: "POST",
+      agent: new SocksProxyAgent(proxy),
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      timeout: 8000,
+    }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode, text }));
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+    req.end(body);
+  });
 }
 
 /* ---------- Почта ---------- */

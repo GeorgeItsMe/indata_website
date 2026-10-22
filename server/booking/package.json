@@ -7,6 +7,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "nodemailer": "10.0.15"
+    "nodemailer": "10.0.15",
+    "socks-proxy-agent": "10.1.0"
   }
 }
