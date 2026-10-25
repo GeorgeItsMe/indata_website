@@ -1203,13 +1203,29 @@
     // Менеджер проекта: какие проекты ведёт и какие блоки ему не видны.
     const projectBoxes = projects.map((p) => h("input", { type: "checkbox", value: p.id }));
     const hideBoxes = Object.keys(BLOCK_LABELS).map((key) => h("input", { type: "checkbox", value: key }));
+    // Галочка у папки отмечает все её проекты; если отмечена часть — показывается наполовину.
+    const folderBoxes = groupByFolder(projects).map(([folder, list]) => {
+      const boxes = list.map((p) => projectBoxes[projects.indexOf(p)]);
+      const box = h("input", { type: "checkbox", "aria-label": `Все проекты папки ${folder || "без папки"}` });
+      const sync = () => {
+        const on = boxes.filter((b) => b.checked).length;
+        box.checked = on === boxes.length;
+        box.indeterminate = on > 0 && on < boxes.length;
+      };
+      box.addEventListener("change", () => {
+        for (const b of boxes) b.checked = box.checked;
+        sync();
+      });
+      for (const b of boxes) b.addEventListener("change", sync);
+      return { folder, list, box, sync };
+    });
     const managerFields = h("div", { class: "form", hidden: true },
       h("div", { class: "field" },
         h("span", { text: "Какие проекты ведёт" }),
         projects.length
-          ? groupByFolder(projects).map(([folder, list]) => h("div", { class: "perm-group" },
-            h("p", { class: "perm-group__title mono", text: folder || "Без папки" }),
-            h("div", { class: "clients-pick" }, list.map((p) => h("label", { class: "check" }, projectBoxes[projects.indexOf(p)], p.title)))))
+          ? folderBoxes.map(({ folder, list, box }) => h("div", { class: "perm-group" },
+            h("label", { class: "check perm-group__title" }, box, folder || "Без папки", h("span", { class: "mono", text: `${list.length} ${plural(list.length, "проект", "проекта", "проектов")}` })),
+            h("div", { class: "clients-pick perm-group__list" }, list.map((p) => h("label", { class: "check" }, projectBoxes[projects.indexOf(p)], p.title)))))
           : h("p", { class: "empty", text: "Проектов пока нет." })),
       h("div", { class: "field" },
         h("span", { text: "Что скрыть от менеджера" }),
@@ -1238,6 +1254,7 @@
         contact.value = user.contact;
       }
       for (const box of projectBoxes) box.checked = Boolean(user?.projectIds?.includes(box.value));
+      for (const f of folderBoxes) f.sync();
       for (const box of hideBoxes) box.checked = Boolean(user?.hide?.includes(box.value));
       managerFields.hidden = !isManagerForm();
       form.hidden = false;
