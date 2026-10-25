@@ -217,6 +217,20 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if ("name" in body) user.name = required(str(body.name, 120), "name");
     if ("company" in body) user.company = str(body.company, 120);
     if ("contact" in body) user.contact = str(body.contact, 120);
+    // Смена роли: себе нельзя; менеджеру сразу задаются проекты, у остальных доступ по проектам снимается.
+    if ("role" in body && body.role !== user.role) {
+      if (user.id === me.id) fail(400, "self");
+      if (!["client", "manager", "admin"].includes(body.role)) fail(400, "role");
+      user.role = body.role;
+      if (user.role === "manager") {
+        user.projectIds = projectIdsOf(body.projectIds ?? []);
+        user.hide = hideOf(body.hide ?? []);
+      } else {
+        delete user.projectIds;
+        delete user.hide;
+      }
+      if (user.role !== "client") for (const p of db.projects) p.clientIds = p.clientIds.filter((id) => id !== user.id);
+    }
     if (user.role === "manager" && "projectIds" in body) user.projectIds = projectIdsOf(body.projectIds);
     if (user.role === "manager" && "hide" in body) user.hide = hideOf(body.hide);
     if ("login" in body) {

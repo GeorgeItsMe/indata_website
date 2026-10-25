@@ -292,6 +292,21 @@ test("заявки на звонок видит только админ", async 
   assert.equal((await clientA.call("GET", "/api/admin/bookings")).status, 403);
 });
 
+test("смена роли: админ становится менеджером без смены пароля", async () => {
+  const made = await admin("POST", "/api/admin/users", { name: "Второй админ", login: "admin2", role: "admin" });
+  const a2 = client("10.0.0.8");
+  await a2("POST", "/api/login", { login: "admin2", password: made.json.password });
+  assert.ok((await a2("GET", "/api/admin/users")).status === 200, "пока админ");
+  const r = await admin("PATCH", `/api/admin/users/${made.json.user.id}`, { role: "manager", projectIds: [project.id] });
+  assert.equal(r.json.user.role, "manager");
+  assert.deepEqual(r.json.user.projectIds, [project.id]);
+  assert.equal((await a2("GET", "/api/admin/users")).status, 403, "та же сессия, но уже без админки");
+  assert.deepEqual((await a2("GET", "/api/projects")).json.projects.map((x) => x.id), [project.id]);
+  assert.equal((await a2("GET", `/api/projects/${project.id}`)).json.project.payments, undefined);
+  assert.equal((await admin("PATCH", `/api/admin/users/admin0001`, { role: "client" })).status, 400, "себе роль не меняем");
+  await admin("DELETE", `/api/admin/users/${made.json.user.id}`);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

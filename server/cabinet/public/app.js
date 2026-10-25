@@ -1233,7 +1233,7 @@
         h("div", { class: "clients-pick" },
           h("label", { class: "check is-locked" }, h("input", { type: "checkbox", checked: true, disabled: true }), "Оплаты и суммы, всегда"),
           hideBoxes.map((box) => h("label", { class: "check" }, box, BLOCK_LABELS[box.value])))));
-    const isManagerForm = () => (editing ? editing.role : role.value) === "manager";
+    const isManagerForm = () => role.value === "manager";
     role.addEventListener("change", () => { managerFields.hidden = !isManagerForm(); });
 
     const error = h("p", { class: "form__error", hidden: true });
@@ -1247,7 +1247,7 @@
       error.hidden = true;
       formTitle.textContent = user ? `${ROLE_LABELS[user.role]}: ${user.name}` : "Добавить человека";
       setBtnLabel(create, user ? "Сохранить" : "Создать и выдать пароль");
-      roleField.hidden = Boolean(user);
+      role.value = user ? user.role : "client";
       if (user) {
         name.value = user.name;
         company.value = user.company;
@@ -1277,6 +1277,10 @@
         }
         try {
           if (editing) {
+            if (role.value !== editing.role) {
+              if (!confirm(`Сменить роль ${editing.name}: ${ROLE_LABELS[editing.role]} → ${ROLE_LABELS[role.value]}? Доступ изменится сразу.`)) return;
+              fields.role = role.value;
+            }
             const { user } = await api("PATCH", `/api/admin/users/${editing.id}`, fields);
             Object.assign(editing, user);
             form.hidden = true;
