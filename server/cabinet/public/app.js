@@ -346,7 +346,9 @@
     const paid = projects.reduce((n, p) => n + (p.paid || 0), 0);
     const tasks = projects.reduce((n, p) => n + (p.openTasks || 0), 0);
     const parts = [`${projects.length} ${plural(projects.length, "проект", "проекта", "проектов")}`];
+    const hasMoney = projects.some((p) => p.total !== undefined); // менеджеру суммы не приходят вовсе
     if (total) parts.push(`${rub(total)} по договорам`, paid >= total ? "оплачено полностью" : `оплачено ${rub(paid)}`);
+    else if (hasMoney) parts.push("сумма —");
     return h("p", { class: cls },
       parts.join(" · "),
       tasks ? [" · ", h("span", { class: "accent nowrap", text: `${me.role === "client" ? "нужно от вас" : "у заказчика"}: ${tasks} ${plural(tasks, "задача", "задачи", "задач")}` })] : null);
@@ -366,7 +368,9 @@
           ? h("div", { class: "project-card__meta project-card__money" },
             h("span", { text: rub(p.total) }),
             h("span", { class: p.paid >= p.total ? "tag--ok" : "muted", text: p.paid >= p.total ? "оплачено" : p.paid ? `оплачено ${rub(p.paid)}` : "не оплачено" }))
-          : null,
+          : p.total === 0
+            ? h("div", { class: "project-card__meta project-card__money" }, h("span", { text: "—" }), h("span", { class: "muted", text: "сумма позже" }))
+            : null,
         p.openTasks
           ? h("span", { class: "mono accent", text: `${me.role === "client" ? "Нужно от вас" : "У заказчика"}: ${p.openTasks} ${plural(p.openTasks, "задача", "задачи", "задач")}` })
           : h("span", { class: "mono", text: `Обновлено ${fmtDate(p.updatedAt)}` })));
@@ -563,7 +567,10 @@
               h("div", { class: "row__side" }, h("div", { text: rub(x.amount) }), tag));
           })),
         ]
-        : h("p", { class: "empty", text: "Пока нет платежей." }));
+        : h("dl", { class: "money" },
+          h("div", {}, h("dt", { text: "Всего" }), h("dd", { text: "—" })),
+          h("div", {}, h("dt", { text: "Оплачено" }), h("dd", { text: "—" })),
+          h("div", {}, h("dt", { text: "Осталось" }), h("dd", { text: "—" }))));
   }
 
   function filesCard(p) {
