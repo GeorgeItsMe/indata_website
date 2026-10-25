@@ -6,6 +6,7 @@
 //   HOST          по умолчанию 127.0.0.1 (снаружи — только через nginx)
 //   DATA_DIR      папка с db.json и файлами проектов, по умолчанию ./data
 //   SITE_DIR      сайт indata.group, откуда берутся шрифты и иконка, по умолчанию ../..
+//   BOOKINGS_FILE заявки на звонок с сайта (файл обработчика server/booking), только чтение
 //   APP_ORIGIN    адрес кабинета, например https://app.indata.group: изменения принимаются только с него
 //   COOKIE_SECURE 0 — для локальной проверки по http
 const http = require("node:http");
@@ -15,6 +16,7 @@ const { createApp } = require("./app.js");
 const handle = createApp({
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, "data")),
   siteDir: path.resolve(process.env.SITE_DIR || path.join(__dirname, "..", "..")),
+  bookingsFile: process.env.BOOKINGS_FILE || null,
   origins: (process.env.APP_ORIGIN || "").split(",").map((s) => s.trim()).filter(Boolean),
   secureCookie: process.env.COOKIE_SECURE !== "0",
 });

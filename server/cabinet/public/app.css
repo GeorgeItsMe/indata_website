@@ -573,6 +573,16 @@ a.file:hover .file__name { color: var(--accent); }
 .contact p { font-size: 15px; line-height: 22px; color: var(--muted); }
 
 /* ---------- Админка ---------- */
+/* Заявки на звонок */
+.booking { display: grid; grid-template-columns: 220px 1fr; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.booking__when b { display: block; font-size: 16px; line-height: 22px; font-weight: 500; }
+.booking__when span { display: block; margin-top: 2px; font-size: 15px; line-height: 20px; }
+.booking__when .mono { font-size: 12px; }
+.booking__name { font-size: 17px; line-height: 23px; }
+.booking__contacts { margin-top: 4px; font-size: 14px; line-height: 20px; color: var(--muted); overflow-wrap: anywhere; }
+.booking__contacts a:hover { text-decoration: underline; }
+.booking__notes { margin: 8px 0; font-size: 14px; line-height: 20px; font-weight: 400; color: #3a3a3a; white-space: pre-line; overflow-wrap: anywhere; }
+.booking__who > .mono { margin-top: 6px; }
 .table { width: 100%; border-collapse: collapse; font-size: 15px; }
 .table th { padding: 0 12px 10px 0; text-align: left; font-weight: 500; font-size: 13px; color: var(--muted); }
 .table td { padding: 12px 12px 12px 0; border-top: 1px solid var(--line); vertical-align: middle; }
@@ -665,6 +675,7 @@ a.file:hover .file__name { color: var(--accent); }
   .edit-row--stage > :nth-child(2), .edit-row--stage > :nth-child(5) { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
+  .booking { grid-template-columns: 1fr; gap: 8px; }
   .top { padding: 20px 16px; }
   .top > .mono:first-child { display: none; }
   .wordmark { position: static; transform: none; font-size: 22px; }

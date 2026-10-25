@@ -21,7 +21,11 @@ before(async () => {
     projects: [],
     sessions: [],
   }));
-  const handle = createApp({ dataDir, origins: [ORIGIN], secureCookie: false, log: { error() {} } });
+  fs.writeFileSync(path.join(dataDir, "bookings.json"), JSON.stringify([
+    { name: "Клиент", email: "c@example.com", contact: "@client", notes: "", start: Date.UTC(2026, 9, 30, 7), startMsk: "пятница, 30 октября, 10:00–10:15 МСК", createdAt: "2026-10-25T10:00:00Z", pending: true },
+    { name: "Ранний", email: "e@example.com", contact: "", notes: "Сайт", start: Date.UTC(2026, 9, 22, 11, 30), createdAt: "2026-10-22T07:57:00Z" },
+  ]));
+  const handle = createApp({ dataDir, bookingsFile: path.join(dataDir, "bookings.json"), origins: [ORIGIN], secureCookie: false, log: { error() {} } });
   server = http.createServer(handle);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -278,6 +282,14 @@ test("менеджер проекта: свои проекты, без дене�
   assert.equal((await pm("GET", "/api/projects")).json.projects.length, 2);
   await admin("DELETE", `/api/admin/projects/${other.id}`);
   assert.deepEqual((await pm("GET", "/api/me")).json.user.projectIds, [project.id], "удалённый проект пропадает у менеджера");
+});
+
+test("заявки на звонок видит только админ", async () => {
+  const r = await admin("GET", "/api/admin/bookings");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.bookings.map((b) => b.name), ["Клиент", "Ранний"], "свежие по времени звонка сверху");
+  assert.equal(r.json.bookings[0].notified, false, "видно, что уведомление не дошло");
+  assert.equal((await clientA.call("GET", "/api/admin/bookings")).status, 403);
 });
 
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {

@@ -44,7 +44,7 @@ class HttpError extends Error {
 const fail = (status, code) => { throw new HttpError(status, code); };
 
 function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"), siteDir = null,
-  origins = [], secureCookie = true, now = Date.now, log = console } = {}) {
+  bookingsFile = null, origins = [], secureCookie = true, now = Date.now, log = console } = {}) {
   const store = createStore(dataDir);
   const { db } = store;
   const sessions = createSessions(store, now);
@@ -249,6 +249,34 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     for (const p of db.projects) p.clientIds = p.clientIds.filter((id) => id !== params.id);
     sessions.destroyAllFor(params.id); // сохраняет базу
     return { body: { ok: true } };
+  }, "admin");
+
+  /* ---------- Админка: заявки на звонок с indata.group ----------
+     Их пишет обработчик записи (server/booking) в свой JSON-файл; кабинет только читает его,
+     чтобы заявки были видны даже тогда, когда уведомление в Telegram не дошло. */
+  route("GET", "/api/admin/bookings", async () => {
+    if (!bookingsFile) return { body: { bookings: [], configured: false } };
+    let items = [];
+    try {
+      items = JSON.parse(fs.readFileSync(bookingsFile, "utf8"));
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    const bookings = items
+      .filter((b) => b && Number.isFinite(b.start))
+      .map((b) => ({
+        start: new Date(b.start).toISOString(),
+        when: b.startMsk || "",
+        name: String(b.name || ""),
+        email: String(b.email || ""),
+        contact: String(b.contact || ""),
+        notes: String(b.notes || ""),
+        timezoneLabel: String(b.timezoneLabel || ""),
+        createdAt: String(b.createdAt || ""),
+        notified: !b.pending,
+      }))
+      .sort((a, b) => b.start.localeCompare(a.start));
+    return { body: { bookings, configured: true } };
   }, "admin");
 
   /* ---------- Админка: проекты ---------- */

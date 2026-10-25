@@ -197,6 +197,7 @@
     { re: /^\/account$/, view: viewAccount },
     { re: /^\/admin$/, view: viewAdminProjects, access: "admin" },
     { re: /^\/admin\/clients$/, view: viewAdminClients, access: "admin" },
+    { re: /^\/admin\/bookings$/, view: viewAdminBookings, access: "admin" },
     { re: /^\/admin\/p\/([\w-]+)$/, view: viewAdminProject, access: "staff" },
   ];
 
@@ -244,7 +245,7 @@
   function shell(...content) {
     const nav = me.role === "admin"
       ? h("nav", { class: "tabs", "aria-label": "Разделы" },
-        [["/admin", "Проекты"], ["/admin/clients", "Люди"]].map(([href, label]) => {
+        [["/admin", "Проекты"], ["/admin/bookings", "Заявки"], ["/admin/clients", "Люди"]].map(([href, label]) => {
           const current = href === "/admin" ? /^\/admin(\/p\/|$)/.test(location.pathname) : location.pathname.startsWith(href);
           return link(href, { "aria-current": current ? "page" : null }, label);
         }))
@@ -1369,6 +1370,56 @@
         h("div", { class: "card table-wrap" }, h("table", { class: "table" },
           h("thead", {}, h("tr", {}, ["Имя", "Логин и контакт", "Роль и доступ", ""].map((t) => h("th", { text: t })))),
           tbody))),
+    ));
+  }
+
+  /* ---------- Админка: заявки на звонок ---------- */
+  async function viewAdminBookings(alive) {
+    loading();
+    const { bookings, configured } = await api("GET", "/api/admin/bookings");
+    if (!alive()) return;
+    const now = new Date().toISOString();
+    const upcoming = bookings.filter((b) => b.start >= now).reverse(); // ближайшие сверху
+    const past = bookings.filter((b) => b.start < now);
+    const late = bookings.filter((b) => !b.notified).length;
+
+    const contactLink = (value) => {
+      if (/^@[\w]{3,}$/.test(value)) return h("a", { class: "accent", href: `https://t.me/${value.slice(1)}`, target: "_blank", rel: "noopener", text: value });
+      if (/^\+?[\d\s()-]{7,}$/.test(value)) return h("a", { class: "accent", href: `tel:${value.replace(/[^\d+]/g, "")}`, text: value });
+      return value;
+    };
+    const item = (b) => h("li", { class: "booking" },
+      h("div", { class: "booking__when" },
+        // «пятница, 30 октября, 18:30–18:45 МСК» → дата отдельно, время отдельно
+        h("b", { text: b.when ? b.when.replace(/, [^,]+ МСК$/, "") : fmtDate(b.start.slice(0, 10)) }),
+        h("span", { text: b.when ? `${(b.when.match(/, ([^,]+) МСК$/) || [])[1] || ""} МСК` : "" }),
+        b.timezoneLabel && !b.timezoneLabel.startsWith("Москва") ? h("span", { class: "mono", text: `у клиента ${b.timezoneLabel}` }) : null),
+      h("div", { class: "booking__who" },
+        h("p", { class: "booking__name", text: b.name }),
+        h("p", { class: "booking__contacts" },
+          b.contact ? [contactLink(b.contact), " · "] : null,
+          h("a", { href: `mailto:${b.email}`, text: b.email })),
+        b.notes ? h("p", { class: "booking__notes", text: b.notes }) : null,
+        h("p", { class: "mono" },
+          `Заявка от ${fmtDate(b.createdAt.slice(0, 10))}`,
+          b.notified ? null : h("span", { class: "accent", text: " · уведомление в Telegram не дошло" }))));
+
+    root.replaceChildren(...shell(
+      h("div", { class: "project-head" },
+        h("div", {},
+          h("span", { class: "eyebrow mono", text: "Админка" }),
+          h("h1", { class: "h1", text: "Заявки" }),
+          h("p", { class: "lead", text: "Записи на звонок с indata.group/call. Здесь видно всё, даже если уведомление в Telegram не пришло." }))),
+      !configured ? h("p", { class: "empty mt-32", text: "Кабинет не подключён к файлу заявок: нужна настройка BOOKINGS_FILE." }) : null,
+      late ? h("section", { class: "notice" }, h("p", { class: "notice__title" }, "Не дошли в Telegram: ", h("b", { text: `${late} ${plural(late, "заявка", "заявки", "заявок")}` }), h("small", { text: "Сервер досылает их раз в минуту, пока Telegram недоступен." }))) : null,
+      h("section", { class: "mt-40" },
+        h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Предстоящие" }), h("span", { class: "mono", text: String(upcoming.length) })),
+        upcoming.length ? h("ul", { class: "rows" }, upcoming.map(item)) : h("p", { class: "empty", text: "Новых записей нет." })),
+      past.length
+        ? h("section", { class: "mt-40" },
+          h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Прошедшие" }), h("span", { class: "mono", text: String(past.length) })),
+          h("ul", { class: "rows" }, past.map(item)))
+        : null,
     ));
   }
 
