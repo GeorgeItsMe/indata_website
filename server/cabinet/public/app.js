@@ -646,13 +646,36 @@
         btn("Новый проект", { onclick: () => { form.hidden = false; title.focus(); } })),
       h("div", { class: "stack mt-24" }, form),
       projects.length
-        ? groupByFolder(projects).map(([folder, list]) => h("section", { class: "folder" },
-          h("div", { class: "folder__head" },
-            h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
-            folderTotals(list, "folder__totals mono")),
-          h("div", { class: "projects" }, list.map((p) => projectCard(p, `/admin/p/${p.id}`)))))
+        ? groupByFolder(projects).map(([folder, list]) => h("details", {
+          class: "folder",
+          open: !collapsedFolders().has(folder),
+          ontoggle: (e) => rememberFolder(folder, e.currentTarget.open),
+        },
+        h("summary", { class: "folder__head" },
+          h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
+          folderTotals(list, "folder__totals mono"),
+          h("span", { class: "folder__chevron", "aria-hidden": "true" })),
+        h("div", { class: "projects" }, list.map((p) => projectCard(p, `/admin/p/${p.id}`)))))
         : h("p", { class: "lead", text: "Проектов пока нет. Создайте первый и откройте его клиенту." }),
     ));
+  }
+
+  // Свёрнутые папки помним в браузере; если хранилище недоступно, все папки просто открыты.
+  const FOLDERS_KEY = "cabinet:collapsed-folders";
+  function collapsedFolders() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(FOLDERS_KEY) || "[]"));
+    } catch {
+      return new Set();
+    }
+  }
+  function rememberFolder(folder, open) {
+    const set = collapsedFolders();
+    if (open) set.delete(folder);
+    else set.add(folder);
+    try {
+      localStorage.setItem(FOLDERS_KEY, JSON.stringify([...set]));
+    } catch {}
   }
 
   function groupByFolder(projects) {
