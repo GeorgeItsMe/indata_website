@@ -13,8 +13,9 @@
      BOOKINGS_FILE   JSON-файл с заявками; без него занятые слоты живут до перезапуска
      TG_BOT_TOKEN    бот, который присылает заявки команде
      TG_CHAT_ID      чат, куда он их присылает
-     TG_PROXY        SOCKS5-прокси до Telegram, например socks5h://127.0.0.1:1081 (с российских серверов
-                     api.telegram.org напрямую недоступен)
+     TG_PROXY        SOCKS5-прокси до Telegram (с российских серверов api.telegram.org напрямую недоступен).
+                     На 81.26.178.170 это socks5h://127.0.0.1:1082 — SSH-туннель tgtunnel-feedly.service
+                     (systemd, поднимается сам после перезагрузки), через него же шлёт логгер Feedly.
      TEAM_EMAIL      почта для заявок (нужны SMTP_*)
      SMTP_USER       ящик-отправитель, например hello@indata.group
      SMTP_PASS       пароль этого ящика
