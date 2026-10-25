@@ -62,7 +62,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   function projectView(p, user) {
     const view = {
-      id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
+      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
       stages: p.stages, payments: p.payments,
       updates: newestFirst(p.updates),
       meetings: newestFirst(p.meetings || []),
@@ -80,8 +80,10 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const { stages } = p;
     const active = stages.find((s) => s.status === "active");
     return {
-      id: p.id, title: p.title, summary: p.summary, updatedAt: p.updatedAt,
+      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
       progress: progress(stages),
+      total: p.payments.reduce((n, x) => n + x.amount, 0),
+      paid: p.payments.filter((x) => x.paid).reduce((n, x) => n + x.amount, 0),
       openTasks: (p.tasks || []).filter((t) => !t.done).length,
       stage: active ? active.title : stages.every((s) => s.status === "done") && stages.length ? "Готово" : "",
       ...(user.role === "admin" ? { clients: p.clientIds.map((id) => db.users.find((u) => u.id === id)?.name).filter(Boolean) } : {}),
@@ -129,8 +131,13 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   });
 
   /* ---------- Проекты: просмотр ---------- */
+  // По папкам, внутри по названию: «Доработки 1», «Доработки 2», «Сайт».
   route("GET", "/api/projects", async ({ user }) => ({
-    body: { projects: db.projects.filter((p) => canSee(user, p)).map((p) => projectSummary(p, user)) },
+    body: {
+      projects: db.projects.filter((p) => canSee(user, p))
+        .sort((a, b) => (a.folder || "").localeCompare(b.folder || "", "ru") || a.title.localeCompare(b.title, "ru"))
+        .map((p) => projectSummary(p, user)),
+    },
   }));
 
   route("GET", "/api/projects/:id", async ({ user, params }) => ({
@@ -217,6 +224,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       id: store.id(),
       title: required(str(body.title, 160), "title"),
       summary: str(body.summary, 600),
+      folder: str(body.folder, 120),
       clientIds: clientIdsOf(body.clientIds ?? []),
       stages: DEFAULT_STAGES.map((title, i) => ({ id: store.id(), title, status: i === 0 ? "active" : "todo", start: "", end: "", note: "" })),
       payments: [],
@@ -237,6 +245,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const p = findProject(user, params.id);
     if ("title" in body) p.title = required(str(body.title, 160), "title");
     if ("summary" in body) p.summary = str(body.summary, 600);
+    if ("folder" in body) p.folder = str(body.folder, 120);
     if ("clientIds" in body) p.clientIds = clientIdsOf(body.clientIds);
     if ("stages" in body) p.stages = list(body.stages, 20).map((s) => ({
       id: idOf(s.id),
@@ -252,7 +261,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       amount: amountOf(x.amount),
       due: dateOf(x.due),
       paid: Boolean(x.paid),
-      paidAt: x.paid ? dateOf(x.paidAt) || new Date(now()).toISOString().slice(0, 10) : "",
+      paidAt: !x.paid ? "" : x.paidAt === undefined ? new Date(now()).toISOString().slice(0, 10) : dateOf(x.paidAt),
     }));
     touch(p);
     store.save();

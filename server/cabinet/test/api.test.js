@@ -210,6 +210,28 @@ test("задачи для заказчика: клиент отмечает, а�
   assert.equal(del.json.project.tasks.length, 2);
 });
 
+test("папки, суммы и оплата без даты", async () => {
+  const folder = "Empire Poker Club";
+  await admin("PATCH", `/api/admin/projects/${project.id}`, { folder });
+  const site = (await admin("POST", "/api/admin/projects", { title: "Сайт клуба", folder, clientIds: [clientA.user.id] })).json.project;
+  assert.equal(site.folder, folder);
+  const r = await admin("PATCH", `/api/admin/projects/${site.id}`, {
+    payments: [
+      { title: "Аванс", amount: 85000, paid: true, paidAt: "" },
+      { title: "Остаток", amount: 85000, paid: false },
+      { title: "Сегодня", amount: 1000, paid: true },
+    ],
+  });
+  assert.deepEqual(r.json.project.payments.map((x) => x.paidAt.length), [0, 0, 10], "пустая дата остаётся пустой, без даты — сегодня");
+  const list = (await clientA.call("GET", "/api/projects")).json.projects;
+  assert.deepEqual(list.map((x) => x.title), ["Доработка платформы", "Сайт клуба"], "по названию внутри папки");
+  const s = list.find((x) => x.id === site.id);
+  assert.equal(s.total, 171000);
+  assert.equal(s.paid, 86000);
+  assert.equal(s.folder, folder);
+  await admin("DELETE", `/api/admin/projects/${site.id}`);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

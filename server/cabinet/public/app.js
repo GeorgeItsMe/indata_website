@@ -305,11 +305,24 @@
     root.replaceChildren(...shell(
       h("span", { class: "eyebrow mono", text: me.company || "Кабинет клиента" }),
       h("h1", { class: "h1", text: projects.length ? "Ваши проекты" : "Здесь появится ваш проект" }),
+      projects.length ? folderTotals(projects, "lead") : null,
       projects.length
-        ? h("div", { class: "projects" }, projects.map(projectCard))
+        ? h("div", { class: "projects" }, projects.map((p) => projectCard(p)))
         : h("p", { class: "lead", text: "Мы добавим его, как только начнём работу. Если что-то нужно уже сейчас, напишите нам в Telegram." }),
       contactBlock(),
     ));
+  }
+
+  // «3 проекта · 1 220 000 ₽ · оплачено 535 000 ₽ · нужно от вас: 14 задач»
+  function folderTotals(projects, cls) {
+    const total = projects.reduce((n, p) => n + p.total, 0);
+    const paid = projects.reduce((n, p) => n + p.paid, 0);
+    const tasks = projects.reduce((n, p) => n + p.openTasks, 0);
+    const parts = [`${projects.length} ${plural(projects.length, "проект", "проекта", "проектов")}`];
+    if (total) parts.push(`${rub(total)} по договорам`, paid >= total ? "оплачено полностью" : `оплачено ${rub(paid)}`);
+    return h("p", { class: cls },
+      parts.join(" · "),
+      tasks ? [" · ", h("span", { class: "accent nowrap", text: `${me.role === "admin" ? "у заказчика" : "нужно от вас"}: ${tasks} ${plural(tasks, "задача", "задачи", "задач")}` })] : null);
   }
 
   function projectCard(p, href = `/p/${p.id}`) {
@@ -322,6 +335,11 @@
           h("span", { text: p.stage ? p.stage : "Скоро начнём" }),
           h("span", { class: "accent", text: `${p.progress}%` })),
         h("div", { class: "bar" }, h("i", { vars: { "--p": `${p.progress}%` } })),
+        p.total
+          ? h("div", { class: "project-card__meta project-card__money" },
+            h("span", { text: rub(p.total) }),
+            h("span", { class: p.paid >= p.total ? "tag--ok" : "muted", text: p.paid >= p.total ? "оплачено" : p.paid ? `оплачено ${rub(p.paid)}` : "не оплачено" }))
+          : null,
         p.openTasks
           ? h("span", { class: "mono accent", text: `${me.role === "admin" ? "У заказчика" : "Нужно от вас"}: ${p.openTasks} ${plural(p.openTasks, "задача", "задачи", "задач")}` })
           : h("span", { class: "mono", text: `Обновлено ${fmtDate(p.updatedAt)}` })));
@@ -592,7 +610,8 @@
     if (!alive()) return;
     const clients = users.filter((u) => u.role === "client" && !u.disabled);
 
-    const title = h("input", { class: "input", required: true, maxlength: "160", placeholder: "Например, Доработка платформы клуба" });
+    const title = h("input", { class: "input", required: true, maxlength: "160", placeholder: "Например, Доработки 2: онлайн-покер" });
+    const folderInput = folderField(projects);
     const picks = clientPicker(clients, []);
     const error = h("p", { class: "form__error", hidden: true });
     const create = btn("Создать проект", { type: "submit" });
@@ -604,7 +623,7 @@
         create.disabled = true;
         error.hidden = true;
         try {
-          const { project } = await api("POST", "/api/admin/projects", { title: title.value, clientIds: picks.value() });
+          const { project } = await api("POST", "/api/admin/projects", { title: title.value, folder: folderInput.input.value, clientIds: picks.value() });
           navigate(`/admin/p/${project.id}`);
         } catch (err) {
           error.textContent = errorText(err);
@@ -614,7 +633,9 @@
       },
     },
     h("h2", { class: "h2", text: "Новый проект" }),
-    h("label", { class: "field" }, h("span", { text: "Название" }), title),
+    h("div", { class: "grid-2" },
+      h("label", { class: "field" }, h("span", { text: "Название" }), title),
+      h("label", { class: "field" }, h("span", { text: "Папка: клиент или компания" }), folderInput.input, folderInput.list)),
     h("div", { class: "field" }, h("span", { text: "Кому открыть" }), picks.el),
     error,
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
@@ -625,9 +646,33 @@
         btn("Новый проект", { onclick: () => { form.hidden = false; title.focus(); } })),
       h("div", { class: "stack mt-24" }, form),
       projects.length
-        ? h("div", { class: "projects" }, projects.map((p) => projectCard(p, `/admin/p/${p.id}`)))
+        ? groupByFolder(projects).map(([folder, list]) => h("section", { class: "folder" },
+          h("div", { class: "folder__head" },
+            h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
+            folderTotals(list, "folder__totals mono")),
+          h("div", { class: "projects" }, list.map((p) => projectCard(p, `/admin/p/${p.id}`)))))
         : h("p", { class: "lead", text: "Проектов пока нет. Создайте первый и откройте его клиенту." }),
     ));
+  }
+
+  function groupByFolder(projects) {
+    const groups = new Map();
+    for (const p of projects) {
+      if (!groups.has(p.folder)) groups.set(p.folder, []);
+      groups.get(p.folder).push(p);
+    }
+    // Проекты без папки — в конце.
+    return [...groups].sort(([a], [b]) => (a ? 0 : 1) - (b ? 0 : 1) || a.localeCompare(b, "ru"));
+  }
+
+  // Поле папки с подсказками из уже существующих папок.
+  function folderField(projects, value = "") {
+    const id = `folders-${Math.random().toString(36).slice(2, 8)}`;
+    const folders = [...new Set(projects.map((p) => p.folder).filter(Boolean))];
+    return {
+      input: h("input", { class: "input", maxlength: "120", value, list: id, placeholder: "Например, Empire Poker Club" }),
+      list: h("datalist", { id }, folders.map((f) => h("option", { value: f }))),
+    };
   }
 
   function clientPicker(clients, selected) {
@@ -641,7 +686,9 @@
   /* ---------- Админка: проект ---------- */
   async function viewAdminProject(alive, id) {
     loading();
-    const [{ project }, { users }] = await Promise.all([api("GET", `/api/projects/${id}`), api("GET", "/api/admin/users")]);
+    const [{ project }, { users }, { projects: all }] = await Promise.all([
+      api("GET", `/api/projects/${id}`), api("GET", "/api/admin/users"), api("GET", "/api/projects"),
+    ]);
     if (!alive()) return;
     let p = project;
     const clients = users.filter((u) => u.role === "client" && (!u.disabled || p.clientIds.includes(u.id)));
@@ -661,6 +708,8 @@
 
     // Основное
     const titleInput = h("input", { class: "input", value: p.title, maxlength: "160", oninput: markDirty });
+    const folderInput = folderField(all, p.folder);
+    folderInput.input.addEventListener("input", markDirty);
     const summaryInput = h("textarea", { class: "textarea", maxlength: "600", rows: "2", placeholder: "Коротко о проекте: что делаем", oninput: markDirty });
     summaryInput.value = p.summary || "";
     const picks = clientPicker(clients, p.clientIds);
@@ -687,7 +736,7 @@
         h("input", { class: "input input--sm", value: x.title, placeholder: "Например, Предоплата 50%", "aria-label": "Платёж", oninput: (e) => { x.title = e.target.value; markDirty(); } }),
         h("input", { class: "input input--sm", type: "number", min: "0", step: "1000", value: String(x.amount ?? ""), placeholder: "Сумма, ₽", "aria-label": "Сумма", oninput: (e) => { x.amount = e.target.value; markDirty(); } }),
         h("input", { class: "input input--sm", type: "date", value: x.due, "aria-label": "Срок оплаты", oninput: (e) => { x.due = e.target.value; markDirty(); } }),
-        h("label", { class: "check" }, h("input", { type: "checkbox", checked: x.paid, onchange: (e) => { x.paid = e.target.checked; if (!x.paid) x.paidAt = ""; markDirty(); } }), "Оплачено"),
+        h("label", { class: "check" }, h("input", { type: "checkbox", checked: x.paid, onchange: (e) => { x.paid = e.target.checked; x.paidAt = x.paid ? today() : ""; markDirty(); } }), "Оплачено"),
         h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": "Удалить платёж", text: "✕", onclick: () => { payments.splice(i, 1); renderPayments(); markDirty(); } }))));
     }
     renderPayments();
@@ -697,6 +746,7 @@
       try {
         const res = await api("PATCH", `/api/admin/projects/${p.id}`, {
           title: titleInput.value,
+          folder: folderInput.input.value,
           summary: summaryInput.value,
           clientIds: picks.value(),
           stages: stages.map((s) => ({ ...s, title: s.title.trim() })).filter((s) => s.title),
@@ -977,7 +1027,9 @@
       h("div", { class: "editor" },
         h("section", { class: "card form" },
           h("h2", { class: "h2", text: "Основное" }),
-          h("label", { class: "field" }, h("span", { text: "Название" }), titleInput),
+          h("div", { class: "grid-2" },
+            h("label", { class: "field" }, h("span", { text: "Название" }), titleInput),
+            h("label", { class: "field" }, h("span", { text: "Папка: клиент или компания" }), folderInput.input, folderInput.list)),
           h("label", { class: "field" }, h("span", { text: "Описание" }), summaryInput),
           h("div", { class: "field" }, h("span", { text: "Кому открыт проект" }), picks.el)),
         h("section", { class: "card form" },
