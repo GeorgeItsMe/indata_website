@@ -635,6 +635,7 @@
     h("div", { class: "actions" }, submit));
 
     root.replaceChildren(...shell(h("div", { class: "page--narrow" },
+      backLink(me.role === "admin" ? "/admin" : "/", "К проектам"),
       h("span", { class: "eyebrow mono", text: "Аккаунт" }),
       h("h1", { class: "h1", text: me.name }),
       h("p", { class: "lead" }, `Логин: ${me.login}`, me.company ? ` · ${me.company}` : ""),
