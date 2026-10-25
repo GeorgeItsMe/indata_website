@@ -13,6 +13,8 @@ const { hashPassword, checkPassword, generatePassword, createSessions, createLim
 const JSON_LIMIT = 256 * 1024;
 const FILE_LIMIT = 25 * 1024 * 1024;
 const STATUSES = ["todo", "active", "done"];
+// Блоки проекта, которые можно скрыть от менеджера. Оплаты и суммы менеджер не видит никогда.
+const BLOCKS = ["tasks", "meetings", "updates", "files"];
 const DEFAULT_STAGES = ["Аналитика", "Дизайн", "Разработка", "Тестирование", "Запуск"];
 // Эти типы браузер может показать сам; остальное отдаём как поток байт, чтобы загруженный
 // HTML или SVG не исполнился на нашем домене.
@@ -58,7 +60,18 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   const publicUser = (u) => ({
     id: u.id, login: u.login, name: u.name, company: u.company || "", contact: u.contact || "", role: u.role,
     disabled: Boolean(u.disabled), createdAt: u.createdAt,
+    ...(u.role === "manager" ? { projectIds: u.projectIds || [], hide: u.hide || [] } : {}),
   });
+
+  /* ---------- Права ----------
+     admin   — всё.
+     client  — читает проекты, где он в clientIds, отмечает свои задачи.
+     manager — свои проекты (projectIds): правит этапы, задачи, созвоны, ленту и документы, кроме скрытых
+               блоков (hide). Денег не видит, людьми и доступами не управляет, проекты не создаёт и не удаляет. */
+  const isAdmin = (u) => u.role === "admin";
+  const isManager = (u) => u.role === "manager";
+  const hides = (u, block) => isManager(u) && (block === "payments" || (u.hide || []).includes(block));
+  const clientNames = (p) => p.clientIds.map((id) => db.users.find((u) => u.id === id)).filter(Boolean);
 
   function projectView(p, user) {
     const view = {
@@ -69,9 +82,13 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       tasks: tasksOrder(p.tasks || []),
       files: p.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt })),
     };
-    if (user.role === "admin") {
+    if (isAdmin(user)) {
       view.clientIds = p.clientIds;
-      view.clients = p.clientIds.map((id) => db.users.find((u) => u.id === id)).filter(Boolean).map(publicUser);
+      view.clients = clientNames(p).map(publicUser);
+    }
+    if (isManager(user)) {
+      view.clients = clientNames(p).map((u) => ({ name: u.name, company: u.company || "" }));
+      for (const block of ["payments", ...BLOCKS]) if (hides(user, block)) delete view[block];
     }
     return view;
   }
@@ -82,18 +99,27 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return {
       id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
       progress: progress(stages),
-      total: p.payments.reduce((n, x) => n + x.amount, 0),
-      paid: p.payments.filter((x) => x.paid).reduce((n, x) => n + x.amount, 0),
-      openTasks: (p.tasks || []).filter((t) => !t.done).length,
+      ...(hides(user, "payments") ? {} : {
+        total: p.payments.reduce((n, x) => n + x.amount, 0),
+        paid: p.payments.filter((x) => x.paid).reduce((n, x) => n + x.amount, 0),
+      }),
+      ...(hides(user, "tasks") ? {} : { openTasks: (p.tasks || []).filter((t) => !t.done).length }),
       stage: active ? active.title : stages.every((s) => s.status === "done") && stages.length ? "Готово" : "",
-      ...(user.role === "admin" ? { clients: p.clientIds.map((id) => db.users.find((u) => u.id === id)?.name).filter(Boolean) } : {}),
+      ...(user.role === "client" ? {} : { clients: clientNames(p).map((u) => u.name) }),
     };
   }
 
-  const canSee = (user, p) => user.role === "admin" || p.clientIds.includes(user.id);
+  const canSee = (user, p) => isAdmin(user)
+    || (isManager(user) ? (user.projectIds || []).includes(p.id) : p.clientIds.includes(user.id));
   function findProject(user, id) {
     const p = db.projects.find((x) => x.id === id);
     if (!p || !canSee(user, p)) fail(404, "not_found");
+    return p;
+  }
+  // Проект, который пользователь вправе править в части block.
+  function findEditable(user, id, block) {
+    const p = findProject(user, id);
+    if (!isAdmin(user) && (!isManager(user) || hides(user, block))) fail(403, "forbidden");
     return p;
   }
   const touch = (p) => { p.updatedAt = new Date(now()).toISOString(); };
@@ -146,6 +172,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   route("GET", "/api/projects/:id/files/:fileId", async ({ user, params }) => {
     const p = findProject(user, params.id);
+    if (hides(user, "files")) fail(404, "not_found");
     const meta = p.files.find((f) => f.id === params.fileId);
     const data = meta && store.readFile(meta.id);
     if (!data) fail(404, "not_found");
@@ -170,9 +197,13 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       name: required(str(body.name, 120), "name"),
       company: str(body.company, 120),
       contact: str(body.contact, 120),
-      role: body.role === "admin" ? "admin" : "client",
+      role: ["admin", "manager"].includes(body.role) ? body.role : "client",
       createdAt: new Date(now()).toISOString(),
     };
+    if (user.role === "manager") {
+      user.projectIds = projectIdsOf(body.projectIds ?? []);
+      user.hide = hideOf(body.hide ?? []);
+    }
     if (db.users.some((u) => u.login === user.login)) fail(409, "login_taken");
     const password = generatePassword();
     user.password = hashPassword(password);
@@ -186,6 +217,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if ("name" in body) user.name = required(str(body.name, 120), "name");
     if ("company" in body) user.company = str(body.company, 120);
     if ("contact" in body) user.contact = str(body.contact, 120);
+    if (user.role === "manager" && "projectIds" in body) user.projectIds = projectIdsOf(body.projectIds);
+    if (user.role === "manager" && "hide" in body) user.hide = hideOf(body.hide);
     if ("login" in body) {
       const login = loginOf(body.login);
       if (db.users.some((u) => u.login === login && u.id !== user.id)) fail(409, "login_taken");
@@ -242,7 +275,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   // Этапы и оплаты редактируются целиком: форма в админке отправляет весь список.
   route("PATCH", "/api/admin/projects/:id", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "project");
+    if (!isAdmin(user) && ["folder", "clientIds", "payments"].some((k) => k in body)) fail(403, "forbidden");
     if ("title" in body) p.title = required(str(body.title, 160), "title");
     if ("summary" in body) p.summary = str(body.summary, 600);
     if ("folder" in body) p.folder = str(body.folder, 120);
@@ -266,18 +300,19 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("DELETE", "/api/admin/projects/:id", async ({ user, params }) => {
     const p = findProject(user, params.id);
     for (const f of p.files) store.deleteFile(f.id);
     db.projects.splice(db.projects.indexOf(p), 1);
+    for (const u of db.users) if (u.projectIds) u.projectIds = u.projectIds.filter((x) => x !== p.id);
     store.save();
     return { body: { ok: true } };
   }, "admin");
 
   route("POST", "/api/admin/projects/:id/updates", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "updates");
     const update = {
       id: store.id(),
       date: dateOf(body.date) || new Date(now()).toISOString().slice(0, 10),
@@ -289,15 +324,15 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     touch(p);
     store.save();
     return { status: 201, body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("DELETE", "/api/admin/projects/:id/updates/:updateId", async ({ user, params }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "updates");
     p.updates = p.updates.filter((u) => u.id !== params.updateId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   // Созвоны: дата, тема, ссылка на запись и договорённости (по одной в строке).
   const meetingOf = (body, id) => ({
@@ -309,30 +344,30 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   });
 
   route("POST", "/api/admin/projects/:id/meetings", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "meetings");
     p.meetings = [...(p.meetings || []), meetingOf(body, store.id())];
     touch(p);
     store.save();
     return { status: 201, body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("PATCH", "/api/admin/projects/:id/meetings/:meetingId", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "meetings");
     const i = (p.meetings || []).findIndex((m) => m.id === params.meetingId);
     if (i < 0) fail(404, "not_found");
     p.meetings[i] = meetingOf(body, params.meetingId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("DELETE", "/api/admin/projects/:id/meetings/:meetingId", async ({ user, params }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "meetings");
     p.meetings = (p.meetings || []).filter((m) => m.id !== params.meetingId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   // Задачи для заказчика: что согласовать, передать или подписать. Клиент отмечает их выполненными сам.
   const taskFields = (body) => ({
@@ -344,32 +379,33 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   const findTask = (p, taskId) => (p.tasks || []).find((t) => t.id === taskId) || fail(404, "not_found");
 
   route("POST", "/api/admin/projects/:id/tasks", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "tasks");
     p.tasks = [...(p.tasks || []), { id: store.id(), ...taskFields(body), done: false, doneAt: "", doneBy: "", createdAt: new Date(now()).toISOString() }];
     touch(p);
     store.save();
     return { status: 201, body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("PATCH", "/api/admin/projects/:id/tasks/:taskId", async ({ user, params, body }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "tasks");
     Object.assign(findTask(p, params.taskId), taskFields(body));
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("DELETE", "/api/admin/projects/:id/tasks/:taskId", async ({ user, params }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "tasks");
     findTask(p, params.taskId);
     p.tasks = p.tasks.filter((t) => t.id !== params.taskId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   route("POST", "/api/projects/:id/tasks/:taskId/done", async ({ user, params, body }) => {
     const p = findProject(user, params.id);
+    if (hides(user, "tasks")) fail(403, "forbidden");
     const task = findTask(p, params.taskId);
     task.done = Boolean(body.done);
     task.doneAt = task.done ? new Date(now()).toISOString() : "";
@@ -381,7 +417,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   // Файл приходит телом запроса как есть, имя — в заголовке X-Filename (encodeURIComponent).
   route("POST", "/api/admin/projects/:id/files", async ({ user, params, req }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "files");
     let name;
     try {
       name = decodeURIComponent(String(req.headers["x-filename"] || ""));
@@ -404,17 +440,17 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     touch(p);
     store.save();
     return { status: 201, body: { project: projectView(p, user) } };
-  }, "admin", { rawBody: true });
+  }, "staff", { rawBody: true });
 
   route("DELETE", "/api/admin/projects/:id/files/:fileId", async ({ user, params }) => {
-    const p = findProject(user, params.id);
+    const p = findEditable(user, params.id, "files");
     const meta = p.files.find((f) => f.id === params.fileId) || fail(404, "not_found");
     store.deleteFile(meta.id);
     p.files = p.files.filter((f) => f !== meta);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
-  }, "admin");
+  }, "staff");
 
   /* ---------- Проверка полей ---------- */
   function str(v, max) {
@@ -450,6 +486,16 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   }
   function idOf(v) {
     return typeof v === "string" && /^[\w-]{6,32}$/.test(v) ? v : store.id();
+  }
+  function projectIdsOf(v) {
+    if (!Array.isArray(v)) fail(400, "projectIds");
+    const ids = [...new Set(v)];
+    if (!ids.every((id) => db.projects.some((p) => p.id === id))) fail(400, "projectIds");
+    return ids;
+  }
+  function hideOf(v) {
+    if (!Array.isArray(v)) fail(400, "hide");
+    return [...new Set(v)].filter((b) => BLOCKS.includes(b));
   }
   function clientIdsOf(v) {
     if (!Array.isArray(v)) fail(400, "clientIds");
@@ -537,7 +583,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       const token = parseCookies(req.headers.cookie).sid || "";
       const user = sessions.user(token);
       if (r.access !== "public" && r.access !== "optional" && !user) fail(401, "auth");
-      if (r.access === "admin" && user.role !== "admin") fail(403, "admin");
+      if (r.access === "admin" && !isAdmin(user)) fail(403, "admin");
+      if (r.access === "staff" && !isAdmin(user) && !isManager(user)) fail(403, "admin");
 
       let body = {};
       if (!r.rawBody && req.method !== "GET" && req.method !== "DELETE") {

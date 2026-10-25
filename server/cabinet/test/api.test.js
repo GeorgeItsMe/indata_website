@@ -232,6 +232,54 @@ test("папки, суммы и оплата без даты", async () => {
   await admin("DELETE", `/api/admin/projects/${site.id}`);
 });
 
+test("менеджер проекта: свои проекты, без денег и скрытых блоков", async () => {
+  const other = (await admin("POST", "/api/admin/projects", { title: "Чужой проект" })).json.project;
+  assert.equal((await admin("POST", "/api/admin/users", { name: "ПМ", login: "pm-bad", role: "manager", projectIds: ["nope"] })).status, 400);
+  const created = await admin("POST", "/api/admin/users", {
+    name: "Ольга", login: "olga.pm", role: "manager", projectIds: [project.id], hide: ["files", "money", "files"],
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.json.user.hide, ["files"], "лишние значения отбрасываются");
+  const pm = client("10.0.0.7");
+  await pm("POST", "/api/login", { login: "olga.pm", password: created.json.password });
+
+  const list = (await pm("GET", "/api/projects")).json.projects;
+  assert.deepEqual(list.map((x) => x.id), [project.id], "только свои проекты");
+  assert.equal(list[0].total, undefined, "суммы не видно");
+  assert.equal(list[0].paid, undefined);
+  const view = (await pm("GET", `/api/projects/${project.id}`)).json.project;
+  assert.equal(view.payments, undefined, "оплаты не отдаются");
+  assert.equal(view.files, undefined, "скрытый блок не отдаётся");
+  assert.ok(Array.isArray(view.tasks) && Array.isArray(view.meetings));
+  assert.equal(view.clientIds, undefined);
+  assert.equal((await pm("GET", `/api/projects/${other.id}`)).status, 404);
+
+  // Правит этапы и задачи, но не деньги, доступы и скрытое
+  const stages = view.stages.map((x) => ({ ...x, note: "от ПМ" }));
+  const r = await pm("PATCH", `/api/admin/projects/${project.id}`, { stages });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.project.payments, undefined, "и в ответе на правку денег нет");
+  assert.equal((await pm("PATCH", `/api/admin/projects/${project.id}`, { payments: [] })).status, 403);
+  assert.equal((await pm("PATCH", `/api/admin/projects/${project.id}`, { clientIds: [] })).status, 403);
+  assert.equal((await pm("PATCH", `/api/admin/projects/${project.id}`, { folder: "x" })).status, 403);
+  assert.equal((await pm("POST", `/api/admin/projects/${project.id}/tasks`, { title: "От ПМ" })).status, 201);
+  assert.equal((await pm("POST", `/api/admin/projects/${project.id}/files`, Buffer.from("x"), { "x-filename": "a.txt" })).status, 403);
+  const fileId = (await admin("GET", `/api/projects/${project.id}`)).json.project.files[0].id;
+  assert.equal((await pm("GET", `/api/projects/${project.id}/files/${fileId}`)).status, 404);
+  assert.equal((await pm("PATCH", `/api/admin/projects/${other.id}`, { stages })).status, 404);
+  assert.equal((await pm("POST", "/api/admin/projects", { title: "x" })).status, 403);
+  assert.equal((await pm("DELETE", `/api/admin/projects/${project.id}`)).status, 403);
+  assert.equal((await pm("GET", "/api/admin/users")).status, 403);
+
+  // Админ открывает файлы и даёт второй проект
+  const edited = await admin("PATCH", `/api/admin/users/${created.json.user.id}`, { hide: [], projectIds: [project.id, other.id] });
+  assert.deepEqual(edited.json.user.projectIds, [project.id, other.id]);
+  assert.ok(Array.isArray((await pm("GET", `/api/projects/${project.id}`)).json.project.files));
+  assert.equal((await pm("GET", "/api/projects")).json.projects.length, 2);
+  await admin("DELETE", `/api/admin/projects/${other.id}`);
+  assert.deepEqual((await pm("GET", "/api/me")).json.user.projectIds, [project.id], "удалённый проект пропадает у менеджера");
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

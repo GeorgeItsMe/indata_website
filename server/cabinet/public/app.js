@@ -7,6 +7,9 @@
   const CONTACT = { label: "@geosibik", url: "https://t.me/geosibik" };
   const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
   const STATUS_LABELS = { todo: "Впереди", active: "В работе", done: "Готово" };
+  const ROLE_LABELS = { client: "Клиент", manager: "Менеджер проекта", admin: "Администратор" };
+  // Блоки, которые можно скрыть от менеджера. Оплаты и суммы скрыты всегда.
+  const BLOCK_LABELS = { tasks: "Задачи для заказчика", meetings: "Созвоны и договорённости", updates: "Лента обновлений", files: "Документы" };
   const ERRORS = {
     credentials: "Неверный логин или пароль",
     rate: "Слишком много попыток. Попробуйте через 15 минут",
@@ -182,7 +185,7 @@
     { re: /^\/account$/, view: viewAccount },
     { re: /^\/admin$/, view: viewAdminProjects, access: "admin" },
     { re: /^\/admin\/clients$/, view: viewAdminClients, access: "admin" },
-    { re: /^\/admin\/p\/([\w-]+)$/, view: viewAdminProject, access: "admin" },
+    { re: /^\/admin\/p\/([\w-]+)$/, view: viewAdminProject, access: "staff" },
   ];
 
   function navigate(path, { replace = false, force = false } = {}) {
@@ -207,6 +210,7 @@
     if (route.access !== "public" && !me) return navigate("/login", { replace: true });
     if (route.access === "public" && me) return navigate("/", { replace: true });
     if (route.access === "admin" && me.role !== "admin") return navigate("/", { replace: true });
+    if (route.access === "staff" && me.role === "client") return navigate("/", { replace: true });
     window.scrollTo(0, 0);
     const params = path.match(route.re).slice(1);
     try {
@@ -228,7 +232,7 @@
   function shell(...content) {
     const nav = me.role === "admin"
       ? h("nav", { class: "tabs", "aria-label": "Разделы" },
-        [["/admin", "Проекты"], ["/admin/clients", "Клиенты"]].map(([href, label]) => {
+        [["/admin", "Проекты"], ["/admin/clients", "Люди"]].map(([href, label]) => {
           const current = href === "/admin" ? /^\/admin(\/p\/|$)/.test(location.pathname) : location.pathname.startsWith(href);
           return link(href, { "aria-current": current ? "page" : null }, label);
         }))
@@ -301,6 +305,16 @@
     loading();
     const { projects } = await api("GET", "/api/projects");
     if (!alive()) return;
+    if (me.role === "manager") {
+      root.replaceChildren(...shell(
+        h("span", { class: "eyebrow mono", text: ROLE_LABELS.manager }),
+        h("h1", { class: "h1", text: "Ваши проекты" }),
+        projects.length
+          ? folderSections(projects)
+          : h("p", { class: "lead", text: "Проектов пока нет. Когда администратор откроет вам проект, он появится здесь." }),
+      ));
+      return;
+    }
     if (projects.length === 1) return viewProject(alive, projects[0].id);
     root.replaceChildren(...shell(
       h("span", { class: "eyebrow mono", text: me.company || "Кабинет клиента" }),
@@ -315,14 +329,14 @@
 
   // «3 проекта · 1 220 000 ₽ · оплачено 535 000 ₽ · нужно от вас: 14 задач»
   function folderTotals(projects, cls) {
-    const total = projects.reduce((n, p) => n + p.total, 0);
-    const paid = projects.reduce((n, p) => n + p.paid, 0);
-    const tasks = projects.reduce((n, p) => n + p.openTasks, 0);
+    const total = projects.reduce((n, p) => n + (p.total || 0), 0);
+    const paid = projects.reduce((n, p) => n + (p.paid || 0), 0);
+    const tasks = projects.reduce((n, p) => n + (p.openTasks || 0), 0);
     const parts = [`${projects.length} ${plural(projects.length, "проект", "проекта", "проектов")}`];
     if (total) parts.push(`${rub(total)} по договорам`, paid >= total ? "оплачено полностью" : `оплачено ${rub(paid)}`);
     return h("p", { class: cls },
       parts.join(" · "),
-      tasks ? [" · ", h("span", { class: "accent nowrap", text: `${me.role === "admin" ? "у заказчика" : "нужно от вас"}: ${tasks} ${plural(tasks, "задача", "задачи", "задач")}` })] : null);
+      tasks ? [" · ", h("span", { class: "accent nowrap", text: `${me.role === "client" ? "нужно от вас" : "у заказчика"}: ${tasks} ${plural(tasks, "задача", "задачи", "задач")}` })] : null);
   }
 
   function projectCard(p, href = `/p/${p.id}`) {
@@ -341,7 +355,7 @@
             h("span", { class: p.paid >= p.total ? "tag--ok" : "muted", text: p.paid >= p.total ? "оплачено" : p.paid ? `оплачено ${rub(p.paid)}` : "не оплачено" }))
           : null,
         p.openTasks
-          ? h("span", { class: "mono accent", text: `${me.role === "admin" ? "У заказчика" : "Нужно от вас"}: ${p.openTasks} ${plural(p.openTasks, "задача", "задачи", "задач")}` })
+          ? h("span", { class: "mono accent", text: `${me.role === "client" ? "Нужно от вас" : "У заказчика"}: ${p.openTasks} ${plural(p.openTasks, "задача", "задачи", "задач")}` })
           : h("span", { class: "mono", text: `Обновлено ${fmtDate(p.updatedAt)}` })));
   }
 
@@ -349,7 +363,7 @@
     loading();
     let { project: p } = await api("GET", `/api/projects/${id}`);
     if (!alive()) return;
-    const admin = me.role === "admin";
+    const admin = me.role !== "client"; // админ или менеджер смотрят глазами клиента
 
     async function toggle(task) {
       try {
@@ -362,7 +376,7 @@
     }
 
     function draw() {
-      const open = p.tasks.filter((t) => !t.done);
+      const open = (p.tasks || []).filter((t) => !t.done);
       const base = `/p/${p.id}`;
       const head = h("div", { class: "project-head" },
         h("div", {},
@@ -372,10 +386,13 @@
         admin ? h("div", { class: "actions" }, btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" })) : null);
       const tabs = h("nav", { class: "subtabs", "aria-label": "Разделы проекта" },
         link(base, { "aria-current": tab === "overview" ? "page" : null }, "Обзор"),
-        link(`${base}/tasks`, { "aria-current": tab === "tasks" ? "page" : null },
-          "Задачи для вас",
-          open.length ? h("span", { class: "badge", text: String(open.length) }) : null));
-      root.replaceChildren(...shell(head, tabs, tab === "tasks" ? tasksTab(p, toggle) : overviewTab(p, open), contactBlock()));
+        p.tasks
+          ? link(`${base}/tasks`, { "aria-current": tab === "tasks" ? "page" : null },
+            "Задачи для вас",
+            open.length ? h("span", { class: "badge", text: String(open.length) }) : null)
+          : null);
+      const body = tab === "tasks" && p.tasks ? tasksTab(p, toggle) : overviewTab(p, open);
+      root.replaceChildren(...shell(head, tabs, body, contactBlock()));
     }
     draw();
   }
@@ -403,17 +420,19 @@
       p.stages.length ? stagesStrip(p.stages) : null,
       h("div", { class: "columns" },
         h("div", { class: "stack stack--wide" },
-          p.meetings.length
+          p.meetings?.length
             ? h("section", { "aria-labelledby": "meetings-title" },
               h("div", { class: "section-head" }, h("h2", { class: "h2", id: "meetings-title", text: "Созвоны и договорённости" })),
               meetingsList(p.meetings))
             : null,
-          h("section", { "aria-labelledby": "feed-title" },
-            h("div", { class: "section-head" }, h("h2", { class: "h2", id: "feed-title", text: "Что нового" })),
-            feed(p.updates))),
+          p.updates
+            ? h("section", { "aria-labelledby": "feed-title" },
+              h("div", { class: "section-head" }, h("h2", { class: "h2", id: "feed-title", text: "Что нового" })),
+              feed(p.updates))
+            : null),
         h("div", { class: "stack" },
-          paymentsCard(p.payments),
-          filesCard(p))),
+          p.payments ? paymentsCard(p.payments) : null,
+          p.files ? filesCard(p) : null)),
     ];
   }
 
@@ -646,7 +665,13 @@
         btn("Новый проект", { onclick: () => { form.hidden = false; title.focus(); } })),
       h("div", { class: "stack mt-24" }, form),
       projects.length
-        ? groupByFolder(projects).map(([folder, list]) => h("details", {
+        ? folderSections(projects)
+        : h("p", { class: "lead", text: "Проектов пока нет. Создайте первый и откройте его клиенту." }),
+    ));
+  }
+
+  function folderSections(projects) {
+    return groupByFolder(projects).map(([folder, list]) => h("details", {
           class: "folder",
           open: !collapsedFolders().has(folder),
           ontoggle: (e) => rememberFolder(folder, e.currentTarget.open),
@@ -655,9 +680,7 @@
           h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
           folderTotals(list, "folder__totals mono"),
           h("span", { class: "folder__chevron", "aria-hidden": "true" })),
-        h("div", { class: "projects" }, list.map((p) => projectCard(p, `/admin/p/${p.id}`)))))
-        : h("p", { class: "lead", text: "Проектов пока нет. Создайте первый и откройте его клиенту." }),
-    ));
+        h("div", { class: "projects" }, list.map((p) => projectCard(p, `/admin/p/${p.id}`)))));
   }
 
   // Свёрнутые папки помним в браузере; если хранилище недоступно, все папки просто открыты.
@@ -709,11 +732,18 @@
   /* ---------- Админка: проект ---------- */
   async function viewAdminProject(alive, id) {
     loading();
+    const isAdmin = me.role === "admin";
     const [{ project }, { users }, { projects: all }] = await Promise.all([
-      api("GET", `/api/projects/${id}`), api("GET", "/api/admin/users"), api("GET", "/api/projects"),
+      api("GET", `/api/projects/${id}`),
+      isAdmin ? api("GET", "/api/admin/users") : { users: [] },
+      isAdmin ? api("GET", "/api/projects") : { projects: [] },
     ]);
     if (!alive()) return;
     let p = project;
+    // Скрытые от менеджера блоки сервер не присылает вовсе.
+    const show = { payments: Boolean(p.payments), tasks: Boolean(p.tasks), meetings: Boolean(p.meetings), updates: Boolean(p.updates), files: Boolean(p.files) };
+    for (const key of ["payments", "tasks", "meetings", "updates", "files"]) p[key] ||= [];
+    p.clientIds ||= [];
     const clients = users.filter((u) => u.role === "client" && (!u.disabled || p.clientIds.includes(u.id)));
     const stages = structuredClone(p.stages);
     const payments = structuredClone(p.payments);
@@ -767,17 +797,20 @@
     saveBtn.addEventListener("click", async () => {
       saveBtn.disabled = true;
       try {
-        const res = await api("PATCH", `/api/admin/projects/${p.id}`, {
+        const body = {
           title: titleInput.value,
-          folder: folderInput.input.value,
           summary: summaryInput.value,
-          clientIds: picks.value(),
           stages: stages.map((s) => ({ ...s, title: s.title.trim() })).filter((s) => s.title),
-          payments: payments.filter((x) => x.title.trim()).map((x) => ({ ...x, amount: Number(x.amount) || 0 })),
-        });
-        p = res.project;
+        };
+        if (isAdmin) {
+          body.folder = folderInput.input.value;
+          body.clientIds = picks.value();
+          body.payments = payments.filter((x) => x.title.trim()).map((x) => ({ ...x, amount: Number(x.amount) || 0 }));
+        }
+        const res = await api("PATCH", `/api/admin/projects/${p.id}`, body);
+        p = { ...p, ...res.project };
         stages.splice(0, stages.length, ...structuredClone(p.stages));
-        payments.splice(0, payments.length, ...structuredClone(p.payments));
+        payments.splice(0, payments.length, ...structuredClone(p.payments || []));
         renderStages();
         renderPayments();
         dirty = false;
@@ -1045,16 +1078,18 @@
 
     root.replaceChildren(...shell(
       h("div", { class: "project-head" },
-        h("div", {}, link("/admin", { class: "eyebrow mono" }, "← Все проекты"), heading),
+        h("div", {}, link(isAdmin ? "/admin" : "/", { class: "eyebrow mono" }, "← Все проекты"), heading),
         h("div", { class: "actions" }, btn("Как видит клиент", { href: `/p/${p.id}`, variant: "light" }))),
       h("div", { class: "editor" },
         h("section", { class: "card form" },
           h("h2", { class: "h2", text: "Основное" }),
-          h("div", { class: "grid-2" },
+          h("div", { class: isAdmin ? "grid-2" : "" },
             h("label", { class: "field" }, h("span", { text: "Название" }), titleInput),
-            h("label", { class: "field" }, h("span", { text: "Папка: клиент или компания" }), folderInput.input, folderInput.list)),
+            isAdmin ? h("label", { class: "field" }, h("span", { text: "Папка: клиент или компания" }), folderInput.input, folderInput.list) : null),
           h("label", { class: "field" }, h("span", { text: "Описание" }), summaryInput),
-          h("div", { class: "field" }, h("span", { text: "Кому открыт проект" }), picks.el)),
+          isAdmin
+            ? h("div", { class: "field" }, h("span", { text: "Кому открыт проект" }), picks.el)
+            : p.clients?.length ? h("p", { class: "mono", text: `Клиент: ${p.clients.map((c) => c.name).join(", ")}` }) : null),
         h("section", { class: "card form" },
           h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Этапы" }), h("span", { class: "mono", text: "Прогресс считается по статусам этапов" })),
           h("div", { class: "edit-head edit-head--stage" }, ["Этап", "Статус", "Начало", "Срок", "Комментарий", ""].map((t) => h("span", { text: t }))),
@@ -1064,7 +1099,7 @@
             small: true,
             onclick: () => { stages.push({ id: "", title: "", status: "todo", start: "", end: "", note: "" }); renderStages(); markDirty(); stageRows.lastElementChild.querySelector("input").focus(); },
           }))),
-        h("section", { class: "card form" },
+        !show.payments ? null : h("section", { class: "card form" },
           h("h2", { class: "h2", text: "Оплаты" }),
           h("div", { class: "edit-head edit-head--pay" }, ["Платёж", "Сумма, ₽", "Оплатить до", "", ""].map((t) => h("span", { text: t }))),
           payRows,
@@ -1074,23 +1109,23 @@
             onclick: () => { payments.push({ id: "", title: "", amount: "", due: "", paid: false, paidAt: "" }); renderPayments(); markDirty(); payRows.lastElementChild.querySelector("input").focus(); },
           }))),
         saveBar,
-        h("section", { class: "card stack" },
+        !show.tasks ? null : h("section", { class: "card stack" },
           h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Задачи для заказчика" }), link(`/p/${p.id}/tasks`, { class: "mono" }, "Как видит клиент ↗")),
           taskForm,
           tasksBox),
-        h("section", { class: "card stack" },
+        !show.meetings ? null : h("section", { class: "card stack" },
           h("h2", { class: "h2", text: "Созвоны и договорённости" }),
           meetingForm,
           meetingsBox),
-        h("section", { class: "card stack" },
+        !show.updates ? null : h("section", { class: "card stack" },
           h("h2", { class: "h2", text: "Лента обновлений" }),
           postForm,
           feedBox),
-        h("section", { class: "card stack" },
+        !show.files ? null : h("section", { class: "card stack" },
           h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Документы" }), h("span", { class: "mono", text: "До 25 МБ на файл" })),
           h("div", { class: "upload" }, uploadBtn, fileInput),
           filesBox),
-        h("div", { class: "actions" }, removeBtn)),
+        isAdmin ? h("div", { class: "actions" }, removeBtn) : null),
     ));
   }
 
@@ -1113,7 +1148,7 @@
   /* ---------- Админка: клиенты ---------- */
   async function viewAdminClients(alive) {
     loading();
-    const { users } = await api("GET", "/api/admin/users");
+    const [{ users }, { projects }] = await Promise.all([api("GET", "/api/admin/users"), api("GET", "/api/projects")]);
     if (!alive()) return;
     const secretBox = h("div");
 
@@ -1132,7 +1167,7 @@
         },
       });
       secretBox.replaceChildren(h("div", { class: "secret appear" },
-        h("p", {}, isNew ? `Клиент ${user.name} создан. ` : `Новый пароль для ${user.name}. `, h("span", { class: "muted", text: "Пароль показываем один раз: отправьте его клиенту сейчас." })),
+        h("p", {}, isNew ? `Доступ для ${user.name} создан. ` : `Новый пароль для ${user.name}. `, h("span", { class: "muted", text: "Пароль показываем один раз: отправьте его сейчас." })),
         h("pre", { text }),
         h("div", { class: "actions" }, copy, btn("Готово", { variant: "light", small: true, onclick: () => secretBox.replaceChildren() }))));
       secretBox.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1142,18 +1177,38 @@
     const company = h("input", { class: "input", maxlength: "120", placeholder: "Empire Poker Club" });
     const login = h("input", { class: "input", required: true, maxlength: "64", autocapitalize: "none", spellcheck: "false", placeholder: "empire" });
     const contact = h("input", { class: "input", maxlength: "120", placeholder: "@username или +7 900 000-00-00" });
-    const role = h("select", { class: "select" }, h("option", { value: "client", text: "Клиент" }), h("option", { value: "admin", text: "Сотрудник InData (админ)" }));
+    const role = h("select", { class: "select" }, Object.entries(ROLE_LABELS).map(([value, label]) => h("option", { value, text: label })));
     const roleField = h("label", { class: "field" }, h("span", { text: "Роль" }), role);
+
+    // Менеджер проекта: какие проекты ведёт и какие блоки ему не видны.
+    const projectBoxes = projects.map((p) => h("input", { type: "checkbox", value: p.id }));
+    const hideBoxes = Object.keys(BLOCK_LABELS).map((key) => h("input", { type: "checkbox", value: key }));
+    const managerFields = h("div", { class: "form", hidden: true },
+      h("div", { class: "field" },
+        h("span", { text: "Какие проекты ведёт" }),
+        projects.length
+          ? groupByFolder(projects).map(([folder, list]) => h("div", { class: "perm-group" },
+            h("p", { class: "perm-group__title mono", text: folder || "Без папки" }),
+            h("div", { class: "clients-pick" }, list.map((p) => h("label", { class: "check" }, projectBoxes[projects.indexOf(p)], p.title)))))
+          : h("p", { class: "empty", text: "Проектов пока нет." })),
+      h("div", { class: "field" },
+        h("span", { text: "Что скрыть от менеджера" }),
+        h("div", { class: "clients-pick" },
+          h("label", { class: "check is-locked" }, h("input", { type: "checkbox", checked: true, disabled: true }), "Оплаты и суммы, всегда"),
+          hideBoxes.map((box) => h("label", { class: "check" }, box, BLOCK_LABELS[box.value])))));
+    const isManagerForm = () => (editing ? editing.role : role.value) === "manager";
+    role.addEventListener("change", () => { managerFields.hidden = !isManagerForm(); });
+
     const error = h("p", { class: "form__error", hidden: true });
-    const formTitle = h("h2", { class: "h2", text: "Новый клиент" });
+    const formTitle = h("h2", { class: "h2", text: "Добавить человека" });
     const create = btn("Создать и выдать пароль", { type: "submit" });
-    let editing = null; // клиент, которого правим; null — создаём нового
+    let editing = null; // кого правим; null — создаём нового
 
     function openForm(user = null) {
       editing = user;
       form.reset();
       error.hidden = true;
-      formTitle.textContent = user ? `Клиент: ${user.name}` : "Новый клиент";
+      formTitle.textContent = user ? `${ROLE_LABELS[user.role]}: ${user.name}` : "Добавить человека";
       setBtnLabel(create, user ? "Сохранить" : "Создать и выдать пароль");
       roleField.hidden = Boolean(user);
       if (user) {
@@ -1162,6 +1217,9 @@
         login.value = user.login;
         contact.value = user.contact;
       }
+      for (const box of projectBoxes) box.checked = Boolean(user?.projectIds?.includes(box.value));
+      for (const box of hideBoxes) box.checked = Boolean(user?.hide?.includes(box.value));
+      managerFields.hidden = !isManagerForm();
       form.hidden = false;
       form.scrollIntoView({ block: "nearest", behavior: "smooth" });
       name.focus({ preventScroll: true });
@@ -1175,6 +1233,10 @@
         error.hidden = true;
         create.disabled = true;
         const fields = { name: name.value, company: company.value, login: login.value, contact: contact.value };
+        if (isManagerForm()) {
+          fields.projectIds = projectBoxes.filter((b) => b.checked).map((b) => b.value);
+          fields.hide = hideBoxes.filter((b) => b.checked).map((b) => b.value);
+        }
         try {
           if (editing) {
             const { user } = await api("PATCH", `/api/admin/users/${editing.id}`, fields);
@@ -1206,6 +1268,7 @@
       h("label", { class: "field" }, h("span", { text: "Логин: латиница, цифры, точка или дефис" }), login),
       h("label", { class: "field" }, h("span", { text: "Telegram или телефон" }), contact)),
     roleField,
+    managerFields,
     error,
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
 
@@ -1223,7 +1286,11 @@
         return h("tr", { class: u.disabled ? "is-off" : null },
           h("td", {}, h("div", { text: u.name }), u.company ? h("small", { class: "muted", text: u.company }) : null),
           h("td", {}, h("div", { class: "mono", text: u.login }), u.contact ? h("small", { class: "muted", text: u.contact }) : null),
-          h("td", { text: u.role === "admin" ? "Админ" : u.disabled ? "Заблокирован" : "Клиент" }),
+          h("td", {},
+            h("div", { text: u.disabled ? "Заблокирован" : ROLE_LABELS[u.role] }),
+            u.role === "manager"
+              ? h("small", { class: "muted", text: `${u.projectIds.length} ${plural(u.projectIds.length, "проект", "проекта", "проектов")}${u.hide.length ? `, скрыто: ${u.hide.map((b) => BLOCK_LABELS[b].toLowerCase()).join(", ")}` : ""}` })
+              : null),
           h("td", {}, self ? h("span", { class: "mono", text: "это вы" }) : h("div", { class: "actions" },
             h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить ${u.name}`, text: "✎", onclick: () => openForm(u) }),
             btn("Новый пароль", {
@@ -1246,7 +1313,7 @@
             h("button", {
               class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить ${u.name}`, text: "✕",
               onclick: () => act(async () => {
-                if (!confirm(`Удалить ${u.name}? Клиент потеряет доступ ко всем проектам.`)) return;
+                if (!confirm(`Удалить ${u.name}? Доступ ко всем проектам пропадёт.`)) return;
                 await api("DELETE", `/api/admin/users/${u.id}`);
                 users.splice(users.indexOf(u), 1);
                 renderTable();
@@ -1259,11 +1326,11 @@
 
     root.replaceChildren(...shell(
       h("div", { class: "project-head" },
-        h("div", {}, h("span", { class: "eyebrow mono", text: "Админка" }), h("h1", { class: "h1", text: "Клиенты" })),
-        btn("Новый клиент", { onclick: () => openForm() })),
+        h("div", {}, h("span", { class: "eyebrow mono", text: "Админка" }), h("h1", { class: "h1", text: "Люди" })),
+        btn("Добавить", { onclick: () => openForm() })),
       h("div", { class: "stack mt-32" }, form, secretBox,
         h("div", { class: "card table-wrap" }, h("table", { class: "table" },
-          h("thead", {}, h("tr", {}, ["Имя", "Логин и контакт", "Роль", ""].map((t) => h("th", { text: t })))),
+          h("thead", {}, h("tr", {}, ["Имя", "Логин и контакт", "Роль и доступ", ""].map((t) => h("th", { text: t })))),
           tbody))),
     ));
   }

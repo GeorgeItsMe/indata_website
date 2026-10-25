@@ -561,6 +561,9 @@ a.file:hover .file__name { color: var(--accent); }
 .edit-head--pay { grid-template-columns: minmax(140px, 2fr) 140px 150px auto 40px; }
 .row-tools { display: flex; gap: 2px; }
 .clients-pick { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+.perm-group + .perm-group { margin-top: 12px; }
+.perm-group__title { margin-bottom: 8px; }
+.check.is-locked { color: var(--muted); cursor: default; }
 .secret {
   display: flex;
   flex-direction: column;
