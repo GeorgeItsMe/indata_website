@@ -5,6 +5,8 @@
 
    GET  — занятые слоты { busy: [ISO-время начала] }, чтобы форма их не показывала.
    POST — заявка. 409 — слот занят или вне рабочего времени, 429 — слишком много заявок с IP.
+   Если Telegram и почта недоступны, заявка всё равно принимается и сохраняется с пометкой pending,
+   а handler.retryPending() (server.js зовёт её раз в минуту) досылает уведомление позже.
 
    Переменные окружения:
      ALLOWED_ORIGIN  с каких сайтов принимать заявки, через запятую: https://indata.group
@@ -60,7 +62,34 @@ function createHandler({
     return joinUrl;
   }
 
-  return async function handler(event) {
+  // Уведомление команде: Telegram и/или почта. true — хотя бы один канал сработал.
+  async function notifyTeam(booking, late = false) {
+    const letter = teamLetter(booking, booking.joinUrl || null, env);
+    if (late) {
+      letter.subject = `С задержкой. ${letter.subject}`;
+      letter.text += `\n\nЗаявка пришла ${when(Date.parse(booking.createdAt), "Europe/Moscow")} МСК, уведомление тогда не отправилось.`;
+    }
+    let told = false;
+    if (tgOn) {
+      try {
+        await sendTelegram(`${letter.subject}\n\n${letter.text}`);
+        told = true;
+      } catch (err) {
+        log.error(`Telegram: ${err.message}`);
+      }
+    }
+    if (teamMailOn) {
+      try {
+        await sendMail(letter);
+        told = true;
+      } catch (err) {
+        log.error(`Письмо команде: ${err.message}`);
+      }
+    }
+    return told;
+  }
+
+  const handler = async function handler(event) {
     const origin = header(event, "origin");
     const allowed = origins.length === 0 || origins.includes(origin);
     const cors = {
@@ -117,28 +146,12 @@ function createHandler({
       }
     }
 
-    const letter = teamLetter(booking, joinUrl, env);
-    let told = false;
-    if (tgOn) {
-      try {
-        await sendTelegram(`${letter.subject}\n\n${letter.text}`);
-        told = true;
-      } catch (err) {
-        log.error(`Telegram: ${err.message}`);
-      }
-    }
-    if (teamMailOn) {
-      try {
-        await sendMail(letter);
-        told = true;
-      } catch (err) {
-        log.error(`Письмо команде: ${err.message}`);
-      }
-    }
-    if (!told) {
-      // Команда не узнала о заявке — освобождаем слот и честно просим отправить ещё раз.
-      store.remove(booking);
-      return reply(502, { error: "notify" });
+    // Канал до команды может лежать (так было, когда упал прокси до Telegram): клиента из-за этого
+    // не теряем — заявка уже сохранена, уведомление дошлёт retryPending.
+    if (!(await notifyTeam(booking))) {
+      booking.pending = true;
+      store.save();
+      log.error("Заявка сохранена, уведомление команде отправим повторно");
     }
 
     let emailed = false;
@@ -153,6 +166,20 @@ function createHandler({
 
     return reply(200, { ok: true, joinUrl, emailed });
   };
+
+  handler.retryPending = async () => {
+    let sent = 0;
+    for (const booking of store.pending()) {
+      if (await notifyTeam(booking, true)) {
+        delete booking.pending;
+        store.save();
+        sent += 1;
+      }
+    }
+    if (sent) log.info(`Дослали уведомлений о заявках: ${sent}`);
+    return sent;
+  };
+  return handler;
 
   function limited(ip, t) {
     if (!ip) return false;
@@ -197,6 +224,7 @@ function createStore(file) {
   return {
     taken: (start) => items.some((b) => b.start === start),
     busy: (t) => items.filter((b) => b.start > t).map((b) => new Date(b.start).toISOString()),
+    pending: () => items.filter((b) => b.pending),
     add(booking) {
       items.push(booking);
       save();

@@ -1,7 +1,7 @@
 {
   "name": "indata-booking",
   "private": true,
-  "description": "Запись на звонок: встреча в Яндекс Телемосте и письма команде и клиенту",
+  "description": "Запись на звонок: слот, уведомление команде в Telegram (с повтором), письма клиенту",
   "main": "index.js",
   "engines": {
     "node": ">=20"
@@ -9,5 +9,9 @@
   "dependencies": {
     "nodemailer": "10.0.15",
     "socks-proxy-agent": "10.1.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/booking.test.mjs"
   }
 }

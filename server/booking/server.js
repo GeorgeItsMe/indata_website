@@ -27,3 +27,8 @@ http.createServer(async (req, res) => {
   });
   res.writeHead(out.statusCode, out.headers).end(out.body);
 }).listen(Number(process.env.PORT) || 8787, process.env.HOST || "127.0.0.1");
+
+// Заявки, о которых команда ещё не узнала (Telegram или почта были недоступны), досылаем раз в минуту.
+const retry = () => handler.retryPending().catch((err) => console.error(`Повтор уведомлений: ${err.message}`));
+setTimeout(retry, 5_000);
+setInterval(retry, 60_000);
