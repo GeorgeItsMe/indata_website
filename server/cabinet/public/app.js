@@ -90,6 +90,18 @@
     return link("/", { class: "wordmark", "aria-label": "InData — кабинет" }, svg, h("span", { text: "InData" }));
   }
 
+  // «← Все проекты»: такая же стрелка в рамке, как у кнопки «назад» на indata.group.
+  function backLink(href, label) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", "M16 10H4m5-5-5 5 5 5");
+    svg.append(path);
+    return link(href, { class: "backlink" }, h("span", { class: "backlink__icon" }, svg), label);
+  }
+
   /* ---------- Форматы ---------- */
   function fmtDate(iso, withYear = false) {
     if (!iso) return "";
@@ -361,9 +373,15 @@
 
   async function viewProject(alive, id, tab = "overview") {
     loading();
-    let { project: p } = await api("GET", `/api/projects/${id}`);
+    const [{ project }, mine] = await Promise.all([
+      api("GET", `/api/projects/${id}`),
+      me.role === "client" ? api("GET", "/api/projects") : null,
+    ]);
     if (!alive()) return;
+    let p = project;
     const admin = me.role !== "client"; // админ или менеджер смотрят глазами клиента
+    // У клиента с одним проектом «все проекты» — это он сам, стрелка назад не нужна.
+    const back = admin || mine.projects.length > 1 ? backLink(me.role === "admin" ? "/admin" : "/", "Все проекты") : null;
 
     async function toggle(task) {
       try {
@@ -380,7 +398,8 @@
       const base = `/p/${p.id}`;
       const head = h("div", { class: "project-head" },
         h("div", {},
-          h("span", { class: "eyebrow mono", text: admin ? "Так проект видит клиент" : "Проект" }),
+          back,
+          admin || !back ? h("span", { class: "eyebrow mono", text: admin ? "Так проект видит клиент" : "Проект" }) : null,
           h("h1", { class: "h1", text: p.title }),
           p.summary ? h("p", { class: "lead", text: p.summary }) : null),
         admin ? h("div", { class: "actions" }, btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" })) : null);
@@ -1078,7 +1097,7 @@
 
     root.replaceChildren(...shell(
       h("div", { class: "project-head" },
-        h("div", {}, link(isAdmin ? "/admin" : "/", { class: "eyebrow mono" }, "← Все проекты"), heading),
+        h("div", {}, backLink(isAdmin ? "/admin" : "/", "Все проекты"), heading),
         h("div", { class: "actions" }, btn("Как видит клиент", { href: `/p/${p.id}`, variant: "light" }))),
       h("div", { class: "editor" },
         h("section", { class: "card form" },

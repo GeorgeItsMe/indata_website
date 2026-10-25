@@ -108,6 +108,36 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .page--narrow { max-width: 720px; }
 
+/* ---------- Назад ко всем проектам ---------- */
+.backlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  font-size: 15px;
+  line-height: 20px;
+  color: var(--muted);
+  transition: color .2s;
+}
+.backlink__icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgb(0 0 0 / .1);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .04);
+  transition: background-color .2s, border-color .2s, transform .3s var(--ease);
+}
+.backlink__icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.backlink:hover { color: #000; }
+.backlink:hover .backlink__icon { background: var(--soft); border-color: rgb(0 0 0 / .18); transform: translateX(-2px); }
+.backlink:focus-visible { outline: none; }
+.backlink:focus-visible .backlink__icon { outline: 2px solid var(--accent); outline-offset: 2px; }
+.backlink + .eyebrow { margin-top: -4px; }
+
 /* ---------- Заголовки ---------- */
 .eyebrow { display: block; margin-bottom: 14px; }
 .h1 {
