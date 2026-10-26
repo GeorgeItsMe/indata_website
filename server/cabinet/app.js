@@ -61,6 +61,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     id: u.id, login: u.login, name: u.name, company: u.company || "", contact: u.contact || "", role: u.role,
     disabled: Boolean(u.disabled), createdAt: u.createdAt,
     ...(u.role === "manager" ? { projectIds: u.projectIds || [], hide: u.hide || [] } : {}),
+    ...(u.role === "client" ? { projectIds: db.projects.filter((p) => p.clientIds.includes(u.id)).map((p) => p.id) } : {}),
   });
 
   /* ---------- Права ----------
@@ -206,10 +207,12 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       user.projectIds = projectIdsOf(body.projectIds ?? []);
       user.hide = hideOf(body.hide ?? []);
     }
+    const clientProjects = user.role === "client" ? projectIdsOf(body.projectIds ?? []) : [];
     if (db.users.some((u) => u.login === user.login)) fail(409, "login_taken");
     const password = generatePassword();
     user.password = hashPassword(password);
     db.users.push(user);
+    if (clientProjects.length) setClientProjects(user, clientProjects);
     store.save();
     return { status: 201, body: { user: publicUser(user), password } };
   }, "admin");
@@ -235,6 +238,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     }
     if (user.role === "manager" && "projectIds" in body) user.projectIds = projectIdsOf(body.projectIds);
     if (user.role === "manager" && "hide" in body) user.hide = hideOf(body.hide);
+    if (user.role === "client" && "projectIds" in body) setClientProjects(user, projectIdsOf(body.projectIds));
     if ("login" in body) {
       const login = loginOf(body.login);
       if (db.users.some((u) => u.login === login && u.id !== user.id)) fail(409, "login_taken");
@@ -599,6 +603,14 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const ids = [...new Set(v)];
     if (!ids.every((id) => db.projects.some((p) => p.id === id))) fail(400, "projectIds");
     return ids;
+  }
+  // Доступ клиента хранится в проектах (clientIds); здесь его выставляют со стороны человека.
+  function setClientProjects(user, ids) {
+    for (const p of db.projects) {
+      const has = p.clientIds.includes(user.id);
+      if (ids.includes(p.id) && !has) p.clientIds = [...p.clientIds, user.id];
+      if (!ids.includes(p.id) && has) p.clientIds = p.clientIds.filter((id) => id !== user.id);
+    }
   }
   function hideOf(v) {
     if (!Array.isArray(v)) fail(400, "hide");

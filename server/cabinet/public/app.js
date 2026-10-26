@@ -1457,7 +1457,7 @@
     const role = h("select", { class: "select" }, Object.entries(ROLE_LABELS).map(([value, label]) => h("option", { value, text: label })));
     const roleField = h("label", { class: "field" }, h("span", { text: "Роль" }), role);
 
-    // Менеджер проекта: какие проекты ведёт и какие блоки ему не видны.
+    // Клиент и менеджер видят только отмеченные проекты; менеджеру ещё можно скрыть блоки.
     const projectBoxes = projects.map((p) => h("input", { type: "checkbox", value: p.id }));
     const hideBoxes = Object.keys(BLOCK_LABELS).map((key) => h("input", { type: "checkbox", value: key }));
     // Галочка у папки отмечает все её проекты; если отмечена часть — показывается наполовину.
@@ -1476,21 +1476,27 @@
       for (const b of boxes) b.addEventListener("change", sync);
       return { folder, list, box, sync };
     });
-    const managerFields = h("div", { class: "form", hidden: true },
-      h("div", { class: "field" },
-        h("span", { text: "Какие проекты ведёт" }),
-        projects.length
+    const projectsLabel = h("span");
+    const projectsField = h("div", { class: "field", hidden: true },
+      projectsLabel,
+      projects.length
           ? folderBoxes.map(({ folder, list, box }) => h("div", { class: "perm-group" },
             h("label", { class: "check perm-group__title" }, box, folder || "Без папки", h("span", { class: "mono", text: `${list.length} ${plural(list.length, "проект", "проекта", "проектов")}` })),
             h("div", { class: "clients-pick perm-group__list" }, list.map((p) => h("label", { class: "check" }, projectBoxes[projects.indexOf(p)], p.title)))))
-          : h("p", { class: "empty", text: "Проектов пока нет." })),
-      h("div", { class: "field" },
-        h("span", { text: "Что скрыть от менеджера" }),
-        h("div", { class: "clients-pick" },
-          h("label", { class: "check is-locked" }, h("input", { type: "checkbox", checked: true, disabled: true }), "Оплаты и суммы, всегда"),
-          hideBoxes.map((box) => h("label", { class: "check" }, box, BLOCK_LABELS[box.value])))));
+        : h("p", { class: "empty", text: "Проектов пока нет." }));
+    const hideField = h("div", { class: "field", hidden: true },
+      h("span", { text: "Что скрыть от менеджера" }),
+      h("div", { class: "clients-pick" },
+        h("label", { class: "check is-locked" }, h("input", { type: "checkbox", checked: true, disabled: true }), "Оплаты и суммы, всегда"),
+        hideBoxes.map((box) => h("label", { class: "check" }, box, BLOCK_LABELS[box.value]))));
     const isManagerForm = () => role.value === "manager";
-    role.addEventListener("change", () => { managerFields.hidden = !isManagerForm(); });
+    const hasProjects = () => role.value !== "admin";
+    function syncRole() {
+      projectsField.hidden = !hasProjects();
+      hideField.hidden = !isManagerForm();
+      projectsLabel.textContent = isManagerForm() ? "Какие проекты ведёт" : "Какие проекты видит в кабинете";
+    }
+    role.addEventListener("change", syncRole);
 
     const error = h("p", { class: "form__error", hidden: true });
     const formTitle = h("h2", { class: "h2", text: "Добавить человека" });
@@ -1513,7 +1519,7 @@
       for (const box of projectBoxes) box.checked = Boolean(user?.projectIds?.includes(box.value));
       for (const f of folderBoxes) f.sync();
       for (const box of hideBoxes) box.checked = Boolean(user?.hide?.includes(box.value));
-      managerFields.hidden = !isManagerForm();
+      syncRole();
       form.hidden = false;
       form.scrollIntoView({ block: "nearest", behavior: "smooth" });
       name.focus({ preventScroll: true });
@@ -1527,10 +1533,8 @@
         error.hidden = true;
         create.disabled = true;
         const fields = { name: name.value, company: company.value, login: login.value, contact: contact.value };
-        if (isManagerForm()) {
-          fields.projectIds = projectBoxes.filter((b) => b.checked).map((b) => b.value);
-          fields.hide = hideBoxes.filter((b) => b.checked).map((b) => b.value);
-        }
+        if (hasProjects()) fields.projectIds = projectBoxes.filter((b) => b.checked).map((b) => b.value);
+        if (isManagerForm()) fields.hide = hideBoxes.filter((b) => b.checked).map((b) => b.value);
         try {
           if (editing) {
             if (role.value !== editing.role) {
@@ -1566,7 +1570,8 @@
       h("label", { class: "field" }, h("span", { text: "Логин: латиница, цифры, точка или дефис" }), login),
       h("label", { class: "field" }, h("span", { text: "Telegram или телефон" }), contact)),
     roleField,
-    managerFields,
+    projectsField,
+    hideField,
     error,
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
 
@@ -1586,8 +1591,8 @@
           h("td", {}, h("div", { class: "mono", text: u.login }), u.contact ? h("small", { class: "muted", text: u.contact }) : null),
           h("td", {},
             h("div", { text: u.disabled ? "Заблокирован" : ROLE_LABELS[u.role] }),
-            u.role === "manager"
-              ? h("small", { class: "muted", text: `${u.projectIds.length} ${plural(u.projectIds.length, "проект", "проекта", "проектов")}${u.hide.length ? `, скрыто: ${u.hide.map((b) => BLOCK_LABELS[b].toLowerCase()).join(", ")}` : ""}` })
+            u.projectIds
+              ? h("small", { class: "muted", text: `${u.projectIds.length ? `${u.projectIds.length} ${plural(u.projectIds.length, "проект", "проекта", "проектов")}` : "нет проектов"}${u.hide?.length ? `, скрыто: ${u.hide.map((b) => BLOCK_LABELS[b].toLowerCase()).join(", ")}` : ""}` })
               : null),
           h("td", {}, self ? h("span", { class: "mono", text: "это вы" }) : h("div", { class: "actions" },
             h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить ${u.name}`, text: "✎", onclick: () => openForm(u) }),

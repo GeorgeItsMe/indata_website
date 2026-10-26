@@ -284,6 +284,29 @@ test("менеджер проекта: свои проекты, без дене�
   assert.deepEqual((await pm("GET", "/api/me")).json.user.projectIds, [project.id], "удалённый проект пропадает у менеджера");
 });
 
+test("доступ клиента к проектам выставляется в карточке человека", async () => {
+  const second = (await admin("POST", "/api/admin/projects", { title: "Сайт" })).json.project;
+  const made = await admin("POST", "/api/admin/users", { name: "Гость", login: "guest", projectIds: [second.id] });
+  assert.equal(made.status, 201);
+  assert.deepEqual(made.json.user.projectIds, [second.id]);
+  assert.deepEqual((await admin("GET", `/api/projects/${second.id}`)).json.project.clientIds, [made.json.user.id]);
+  assert.equal((await admin("POST", "/api/admin/users", { name: "Х", login: "guest-bad", projectIds: ["nope"] })).status, 400);
+  assert.equal((await admin("GET", "/api/admin/users")).json.users.some((u) => u.login === "guest-bad"), false, "с ошибкой никого не заводим");
+
+  const g = client("10.0.0.7");
+  await g("POST", "/api/login", { login: "guest", password: made.json.password });
+  assert.deepEqual((await g("GET", "/api/projects")).json.projects.map((x) => x.id), [second.id]);
+  assert.equal((await g("GET", `/api/projects/${project.id}`)).status, 404);
+
+  const moved = await admin("PATCH", `/api/admin/users/${made.json.user.id}`, { projectIds: [project.id] });
+  assert.deepEqual(moved.json.user.projectIds, [project.id]);
+  assert.deepEqual((await g("GET", "/api/projects")).json.projects.map((x) => x.id), [project.id], "доступ меняется сразу");
+  assert.deepEqual((await admin("GET", `/api/projects/${project.id}`)).json.project.clientIds, [clientA.user.id, made.json.user.id], "другие клиенты проекта остаются");
+
+  await admin("DELETE", `/api/admin/users/${made.json.user.id}`);
+  await admin("DELETE", `/api/admin/projects/${second.id}`);
+});
+
 test("заявки на звонок видит только админ", async () => {
   const r = await admin("GET", "/api/admin/bookings");
   assert.equal(r.status, 200);
