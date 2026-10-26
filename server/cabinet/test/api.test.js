@@ -353,6 +353,20 @@ test("чек-лист: разделы, наши пункты и коммента
   assert.equal((await clientA.call("DELETE", `/api/projects/${project.id}/tasks/${team.id}/comments/${comment.id}`)).status, 200);
 });
 
+test("разделы чек-листа: переименовать и удалить", async () => {
+  const add = (body) => admin("POST", `/api/admin/projects/${project.id}/tasks`, body);
+  await add({ title: "Пункт 1", group: "Раздел А", side: "client" });
+  await add({ title: "Пункт 2", group: "Раздел А", side: "team" });
+  const ren = await admin("POST", `/api/admin/projects/${project.id}/task-groups/rename`, { from: "Раздел А", to: "Раздел Б" });
+  assert.equal(ren.status, 200);
+  assert.equal(ren.json.project.tasks.filter((x) => x.group === "Раздел Б").length, 2);
+  assert.equal((await admin("POST", `/api/admin/projects/${project.id}/task-groups/rename`, { from: "Нет такого", to: "X" })).status, 404);
+  assert.equal((await admin("POST", `/api/admin/projects/${project.id}/task-groups/rename`, { from: "Раздел Б", to: " " })).status, 400);
+  assert.equal((await clientA.call("POST", `/api/admin/projects/${project.id}/task-groups/delete`, { group: "Раздел Б" })).status, 403);
+  const del = await admin("POST", `/api/admin/projects/${project.id}/task-groups/delete`, { group: "Раздел Б" });
+  assert.equal(del.json.project.tasks.some((x) => x.group === "Раздел Б"), false);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

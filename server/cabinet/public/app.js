@@ -389,7 +389,36 @@
     const back = admin || mine.projects.length > 1 ? backLink(me.role === "admin" ? "/admin" : "/", "Все проекты") : null;
 
     const threads = new Set(); // открытые ветки комментариев
+    // Правка чек-листа прямо на месте (админ и менеджер): какой пункт правим, куда добавляем, какой раздел переименовываем.
+    const edit = { item: null, add: null, group: null, newGroup: false };
+    // Форма закрывается только после успешного ответа, чтобы при ошибке не потерять введённое.
+    const run = async (fn, message, onOk = () => {}) => {
+      try {
+        p = (await fn()).project;
+        onOk();
+        draw();
+        if (message) toast(message);
+        return true;
+      } catch (err) {
+        toast(errorText(err));
+        return false;
+      }
+    };
     const act = {
+      staff: me.role !== "client",
+      edit,
+      redraw: () => draw(),
+      saveTask: (t, body) => run(() => api("PATCH", `/api/admin/projects/${p.id}/tasks/${t.id}`, body), "Сохранено", () => { edit.item = null; }),
+      addTask: (body) => run(() => api("POST", `/api/admin/projects/${p.id}/tasks`, body), "Пункт добавлен", () => { edit.add = null; edit.newGroup = false; }),
+      deleteTask(t) {
+        if (!confirm(`Удалить пункт «${t.title}»?`)) return;
+        run(() => api("DELETE", `/api/admin/projects/${p.id}/tasks/${t.id}`), "Пункт удалён");
+      },
+      renameGroup: (from, to) => run(() => api("POST", `/api/admin/projects/${p.id}/task-groups/rename`, { from, to }), "Раздел переименован", () => { edit.group = null; }),
+      deleteGroup(group, count) {
+        if (!confirm(`Удалить раздел «${group || "Другое"}» и все пункты в нём (${count})? Это нельзя отменить.`)) return;
+        run(() => api("POST", `/api/admin/projects/${p.id}/task-groups/delete`, { group }), "Раздел удалён");
+      },
       async toggle(task) {
         try {
           p = (await api("POST", `/api/projects/${p.id}/tasks/${task.id}/done`, { done: !task.done })).project;
@@ -487,22 +516,58 @@
   }
 
   // Чек-лист: разделы по порядку создания, в каждом «От клуба» и «От нас», у пунктов комментарии.
+  // Админ и менеджер правят его прямо здесь: пункты, разделы, добавление.
   function checklistView(p, act) {
     const tasks = [...p.tasks].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
-    const groups = new Map();
+    const groups = new Map(); // ключ — значение group как в базе, «Другое» — пустая строка
     for (const t of tasks) {
-      const g = t.group || "Другое";
+      const g = t.group || "";
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(t);
     }
-    if (groups.has("Другое")) { // пункты без раздела — в конце
-      const rest = groups.get("Другое");
-      groups.delete("Другое");
-      groups.set("Другое", rest);
+    if (groups.has("")) { // пункты без раздела — в конце
+      const rest = groups.get("");
+      groups.delete("");
+      groups.set("", rest);
     }
+    const names = [...groups.keys()].filter(Boolean);
+    const listId = `cl-groups-${p.id}`;
     const ours = tasks.filter((t) => t.side === "team");
     const theirs = tasks.filter((t) => t.side !== "team");
     const doneOf = (list) => list.filter((t) => t.done).length;
+    const { edit } = act;
+    const tool = (label, text, onclick, danger = false) => h("button", { class: `icon-btn${danger ? " icon-btn--danger" : ""}`, type: "button", title: label, "aria-label": label, text, onclick });
+    const cancelBtn = (onclick) => btn("Отмена", { variant: "light", small: true, onclick });
+
+    // Форма пункта: правка существующего или новый пункт в разделе и колонке.
+    const taskForm = (t, defaults, onSubmit, onCancel) => {
+      const title = h("input", { class: "input input--sm", maxlength: "200", required: true, value: t ? t.title : "", placeholder: "Что сделать" });
+      const text = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Пояснение, если нужно" });
+      text.value = t ? t.text : "";
+      const due = h("input", { class: "input input--sm", type: "date", value: t ? t.due : defaults.due || "" });
+      const side = h("select", { class: "select select--sm" }, h("option", { value: "client", text: "От клуба" }), h("option", { value: "team", text: "От нас" }));
+      side.value = t ? t.side || "client" : defaults.side;
+      const group = h("input", { class: "input input--sm", maxlength: "120", list: listId, value: t ? t.group || "" : defaults.group, placeholder: "Раздел" });
+      const save = btn(t ? "Сохранить" : "Добавить", { type: "submit", small: true });
+      const form = h("form", {
+        class: "ci-form",
+        async onsubmit(e) {
+          e.preventDefault();
+          if (!title.value.trim()) return title.focus();
+          save.disabled = true;
+          const ok = await onSubmit({ title: title.value, text: text.value, due: due.value, side: side.value, group: group.value });
+          if (!ok) save.disabled = false;
+        },
+      },
+      title, text,
+      h("div", { class: "ci-form__row" },
+        h("label", { class: "field" }, h("span", { text: "Срок" }), due),
+        h("label", { class: "field" }, h("span", { text: "Колонка" }), side),
+        h("label", { class: "field" }, h("span", { text: "Раздел" }), group)),
+      h("div", { class: "actions" }, save, cancelBtn(onCancel)));
+      setTimeout(() => title.focus({ preventScroll: true }));
+      return form;
+    };
 
     const thread = (t) => {
       const text = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Вопрос, уточнение или что уже сделано" });
@@ -532,6 +597,9 @@
     };
 
     const item = (t) => {
+      if (edit.item === t.id) {
+        return h("li", { class: "ci ci--editing" }, taskForm(t, {}, (body) => act.saveTask(t, body), () => { edit.item = null; act.redraw(); }));
+      }
       const canToggle = t.side !== "team" || me.role !== "client";
       const overdue = !t.done && t.due && t.due < today();
       const n = (t.comments || []).length;
@@ -551,28 +619,68 @@
               : t.due ? h("span", { class: `tag ${overdue ? "tag--due" : "muted"}`, text: `${overdue ? "Срок был" : "До"} ${fmtDate(t.due)}` }) : null,
             t.url ? h("a", { class: "chip", href: t.url, target: "_blank", rel: "noopener noreferrer", text: `${hostOf(t.url)} ↗` }) : null,
             h("button", { class: "link-btn ci__talk", type: "button", "aria-expanded": String(act.isOpen(t.id)), onclick: () => act.toggleThread(t.id), text: n ? `Комментарии · ${n}` : "Комментировать" })),
-          act.isOpen(t.id) ? thread(t) : null));
+          act.isOpen(t.id) ? thread(t) : null),
+        act.staff
+          ? h("div", { class: "row-tools ci__tools" },
+            tool("Изменить пункт", "✎", () => { edit.item = t.id; act.redraw(); }),
+            tool("Удалить пункт", "✕", () => act.deleteTask(t), true))
+          : null);
     };
-    const column = (title, list, cls) => h("div", { class: `cl-col ${cls}` },
-      h("h4", { class: "mono", text: title }),
-      list.length ? h("ul", { class: "ci-list" }, list.map(item)) : h("p", { class: "empty", text: "Нет пунктов" }));
+
+    const column = (group, side, title, list) => {
+      const key = `${group}|${side}`;
+      return h("div", { class: `cl-col ${side === "team" ? "cl-col--team" : "cl-col--club"}` },
+        h("h4", { class: "mono", text: title }),
+        list.length ? h("ul", { class: "ci-list" }, list.map(item)) : h("p", { class: "empty", text: "Нет пунктов" }),
+        act.staff
+          ? edit.add === key
+            ? taskForm(null, { group, side, due: side === "client" ? list.find((t) => t.due)?.due : "" }, (body) => act.addTask(body), () => { edit.add = null; act.redraw(); })
+            : h("button", { class: "link-btn ci-add", type: "button", text: "+ Добавить пункт", onclick: () => { edit.add = key; act.redraw(); } })
+          : null);
+    };
+
+    const groupHead = (group, list, i) => {
+      const open = list.filter((t) => !t.done && t.side !== "team" && t.due).map((t) => t.due).sort()[0];
+      if (edit.group === group) {
+        const name = h("input", { class: "input input--sm", maxlength: "120", value: group, placeholder: "Название раздела" });
+        setTimeout(() => name.focus());
+        return h("form", {
+          class: "cl-group__head cl-group__head--edit",
+          onsubmit: (e) => { e.preventDefault(); if (name.value.trim()) act.renameGroup(group, name.value); },
+        }, h("span", { class: "mono accent", text: String(i + 1).padStart(2, "0") }), name,
+        btn("Сохранить", { type: "submit", small: true }), cancelBtn(() => { edit.group = null; act.redraw(); }));
+      }
+      return h("header", { class: "cl-group__head" },
+        h("span", { class: "mono accent", text: String(i + 1).padStart(2, "0") }),
+        h("h3", { text: group || "Другое" }),
+        open ? h("span", { class: `cl-group__due${open < today() ? " is-late" : ""}`, text: `до ${fmtDate(open)}` }) : null,
+        act.staff
+          ? h("div", { class: `row-tools${open ? "" : " cl-group__tools"}` },
+            tool("Переименовать раздел", "✎", () => { edit.group = group; act.redraw(); }),
+            tool("Удалить раздел", "✕", () => act.deleteGroup(group, list.length), true))
+          : null);
+    };
+
+    const newGroup = () => {
+      if (!edit.newGroup) return h("button", { class: "btn btn--light btn--small cl-new", type: "button", onclick: () => { edit.newGroup = true; act.redraw(); } },
+        h("span", { class: "btn__roll" }, h("span", { text: "+ Добавить раздел" }), h("span", { text: "+ Добавить раздел", "aria-hidden": "true" })));
+      return h("article", { class: "cl-group cl-group--new" },
+        h("header", { class: "cl-group__head" }, h("h3", { text: "Новый раздел" })),
+        h("div", { class: "cl-col" }, taskForm(null, { group: "", side: "client" }, (body) => (body.group.trim() ? act.addTask(body) : (toast("Укажите название раздела"), false)), () => { edit.newGroup = false; act.redraw(); })));
+    };
 
     return h("section", { class: "checklist" },
+      h("datalist", { id: listId }, names.map((g) => h("option", { value: g }))),
       h("p", { class: "lead tasks-lead", text: "Что нужно от клуба и что делаем мы. Отмечайте выполненное и пишите комментарии к любому пункту: мы видим сразу." }),
       h("div", { class: "checklist__stats" },
         h("div", {}, h("span", { text: "От клуба" }), h("b", { text: `${doneOf(theirs)} из ${theirs.length}` })),
         h("div", {}, h("span", { text: "От нас" }), h("b", { text: `${doneOf(ours)} из ${ours.length}` }))),
-      [...groups].map(([g, list], i) => {
-        const open = list.filter((t) => !t.done && t.side !== "team" && t.due).map((t) => t.due).sort()[0];
-        return h("article", { class: "cl-group" },
-          h("header", { class: "cl-group__head" },
-            h("span", { class: "mono accent", text: String(i + 1).padStart(2, "0") }),
-            h("h3", { text: g }),
-            open ? h("span", { class: `cl-group__due${open < today() ? " is-late" : ""}`, text: `до ${fmtDate(open)}` }) : null),
-          h("div", { class: "cl-group__cols" },
-            column("От клуба", list.filter((t) => t.side !== "team"), "cl-col--club"),
-            column("От нас", list.filter((t) => t.side === "team"), "cl-col--team")));
-      }));
+      [...groups].map(([group, list], i) => h("article", { class: "cl-group" },
+        groupHead(group, list, i),
+        h("div", { class: "cl-group__cols" },
+          column(group, "client", "От клуба", list.filter((t) => t.side !== "team")),
+          column(group, "team", "От нас", list.filter((t) => t.side === "team"))))),
+      act.staff ? newGroup() : null);
   }
 
   function tasksTab(p, onToggle) {

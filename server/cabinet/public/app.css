@@ -555,6 +555,24 @@ a.chip:hover { background: #050505; color: #fff; }
 .thread__form .textarea { min-height: 56px; font-size: 14px; }
 .thread__item + .thread__form { padding-top: 10px; border-top: 1px solid var(--line); }
 
+/* Чек-лист: правка на месте */
+.ci__tools { flex: none; align-self: flex-start; opacity: .35; transition: opacity .2s; }
+.ci:hover .ci__tools, .ci__tools:focus-within { opacity: 1; }
+.cl-group__head .row-tools { flex: none; }
+.cl-group__tools { margin-left: auto; }
+.cl-group__head--edit { align-items: center; }
+.cl-group__head--edit .input { flex: 1; max-width: 420px; }
+.ci-add { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.ci-add:hover { color: var(--accent); }
+.ci--editing { display: block; }
+.ci-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 12px; border-radius: 8px; background: #fff; border: 1px solid var(--line); }
+.ci-form .textarea { min-height: 56px; font-size: 14px; }
+.ci-form__row { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 8px; }
+.ci-form__row .field > span { font-size: 12px; }
+.cl-new { margin-top: 16px; }
+.cl-group--new .cl-col { padding-top: 4px; }
+@media (max-width: 640px) { .ci-form__row { grid-template-columns: 1fr; } }
+
 /* Созвоны */
 .stack--wide { gap: 48px; }
 .meetings { display: flex; flex-direction: column; gap: 12px; }

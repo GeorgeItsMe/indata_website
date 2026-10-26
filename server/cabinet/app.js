@@ -459,6 +459,30 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return { body: { project: projectView(p, user) } };
   }, "staff");
 
+  // Разделы чек-листа: переименовать или удалить целиком, одним действием.
+  route("POST", "/api/admin/projects/:id/task-groups/rename", async ({ user, params, body }) => {
+    const p = findEditable(user, params.id, "tasks");
+    const from = str(body.from, 120);
+    const to = required(str(body.to, 120), "group");
+    const list = (p.tasks || []).filter((t) => (t.group || "") === from);
+    if (!list.length) fail(404, "not_found");
+    for (const t of list) t.group = to;
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "staff");
+
+  route("POST", "/api/admin/projects/:id/task-groups/delete", async ({ user, params, body }) => {
+    const p = findEditable(user, params.id, "tasks");
+    const group = str(body.group, 120);
+    const before = (p.tasks || []).length;
+    p.tasks = (p.tasks || []).filter((t) => (t.group || "") !== group);
+    if (p.tasks.length === before) fail(404, "not_found");
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "staff");
+
   route("POST", "/api/projects/:id/tasks/:taskId/done", async ({ user, params, body }) => {
     const p = findProject(user, params.id);
     if (hides(user, "tasks")) fail(403, "forbidden");
