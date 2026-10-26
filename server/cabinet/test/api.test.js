@@ -320,6 +320,39 @@ test("процент проекта можно поставить вручную
   assert.equal(back.json.project.progressManual, false);
 });
 
+test("чек-лист: разделы, наши пункты и комментарии", async () => {
+  const add = (body) => admin("POST", `/api/admin/projects/${project.id}/tasks`, body);
+  await add({ title: "Выбрать SMS-сервис", group: "Вход по SMS", side: "client" });
+  const r = await add({ title: "Сравнить SMS-сервисы", group: "Вход по SMS", side: "team" });
+  const team = r.json.project.tasks.find((t) => t.title === "Сравнить SMS-сервисы");
+  assert.equal(team.side, "team");
+  assert.deepEqual(team.comments, []);
+  const before = (await clientA.call("GET", "/api/projects")).json.projects.find((x) => x.id === project.id).openTasks;
+
+  // Клиент не отмечает наши пункты, но комментирует
+  assert.equal((await clientA.call("POST", `/api/projects/${project.id}/tasks/${team.id}/done`, { done: true })).status, 403);
+  const c = await clientA.call("POST", `/api/projects/${project.id}/tasks/${team.id}/comments`, { text: "Нам важна цена на МТС" });
+  assert.equal(c.status, 201);
+  const comment = c.json.project.tasks.find((t) => t.id === team.id).comments[0];
+  assert.equal(comment.author, "Иван");
+  assert.equal((await clientA.call("POST", `/api/projects/${project.id}/tasks/${team.id}/comments`, { text: "  " })).status, 400);
+  assert.equal((await clientB.call("POST", `/api/projects/${project.id}/tasks/${team.id}/comments`, { text: "чужой" })).status, 404);
+
+  // Наш пункт отмечает админ; счётчик клиента считает только пункты клуба
+  assert.equal((await admin("POST", `/api/projects/${project.id}/tasks/${team.id}/done`, { done: true })).status, 200);
+  const after = (await clientA.call("GET", "/api/projects")).json.projects.find((x) => x.id === project.id).openTasks;
+  assert.equal(after, before, "наши пункты не входят в «Нужно от вас»");
+
+  // Правка без группы и стороны их не сбрасывает
+  const edited = await admin("PATCH", `/api/admin/projects/${project.id}/tasks/${team.id}`, { title: "Сравнить 4 SMS-сервиса" });
+  const t2 = edited.json.project.tasks.find((t) => t.id === team.id);
+  assert.equal(t2.group, "Вход по SMS");
+  assert.equal(t2.side, "team");
+
+  // Удалить комментарий может автор, чужой клиент не может
+  assert.equal((await clientA.call("DELETE", `/api/projects/${project.id}/tasks/${team.id}/comments/${comment.id}`)).status, 200);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

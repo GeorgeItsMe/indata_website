@@ -105,7 +105,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
         total: p.payments.reduce((n, x) => n + x.amount, 0),
         paid: p.payments.filter((x) => x.paid).reduce((n, x) => n + x.amount, 0),
       }),
-      ...(hides(user, "tasks") ? {} : { openTasks: (p.tasks || []).filter((t) => !t.done).length }),
+      ...(hides(user, "tasks") ? {} : { openTasks: (p.tasks || []).filter((t) => !t.done && t.side !== "team").length }),
       stage: active ? active.title : stages.every((s) => s.status === "done") && stages.length ? "Готово" : "",
       ...(user.role === "client" ? {} : { clients: clientNames(p).map((u) => u.name) }),
     };
@@ -421,18 +421,21 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return { body: { project: projectView(p, user) } };
   }, "staff");
 
-  // Задачи для заказчика: что согласовать, передать или подписать. Клиент отмечает их выполненными сам.
+  // Задачи: что сделать клубу (side "client") и нам (side "team"), по разделам чек-листа (group).
+  // Клиент отмечает только свои пункты, наши видит. Комментировать могут все, кто видит проект.
   const taskFields = (body) => ({
     title: required(str(body.title, 200), "task_title"),
     text: str(body.text, 2000),
     due: dateOf(body.due),
     url: body.url ? urlOf(body.url) : "",
+    group: str(body.group, 120),
+    side: body.side === "team" ? "team" : "client",
   });
   const findTask = (p, taskId) => (p.tasks || []).find((t) => t.id === taskId) || fail(404, "not_found");
 
   route("POST", "/api/admin/projects/:id/tasks", async ({ user, params, body }) => {
     const p = findEditable(user, params.id, "tasks");
-    p.tasks = [...(p.tasks || []), { id: store.id(), ...taskFields(body), done: false, doneAt: "", doneBy: "", createdAt: new Date(now()).toISOString() }];
+    p.tasks = [...(p.tasks || []), { id: store.id(), ...taskFields(body), done: false, doneAt: "", doneBy: "", comments: [], createdAt: new Date(now()).toISOString() }];
     touch(p);
     store.save();
     return { status: 201, body: { project: projectView(p, user) } };
@@ -440,7 +443,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   route("PATCH", "/api/admin/projects/:id/tasks/:taskId", async ({ user, params, body }) => {
     const p = findEditable(user, params.id, "tasks");
-    Object.assign(findTask(p, params.taskId), taskFields(body));
+    const task = findTask(p, params.taskId);
+    Object.assign(task, taskFields({ group: task.group, side: task.side, ...body }));
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };
@@ -459,9 +463,36 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const p = findProject(user, params.id);
     if (hides(user, "tasks")) fail(403, "forbidden");
     const task = findTask(p, params.taskId);
+    if (user.role === "client" && task.side === "team") fail(403, "forbidden");
     task.done = Boolean(body.done);
     task.doneAt = task.done ? new Date(now()).toISOString() : "";
     task.doneBy = task.done ? user.name : "";
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  });
+
+  route("POST", "/api/projects/:id/tasks/:taskId/comments", async ({ user, params, body }) => {
+    const p = findProject(user, params.id);
+    if (hides(user, "tasks")) fail(403, "forbidden");
+    const task = findTask(p, params.taskId);
+    const text = required(str(body.text, 2000), "comment");
+    task.comments = [...(task.comments || []), {
+      id: store.id(), text, author: user.name, authorId: user.id, role: user.role, at: new Date(now()).toISOString(),
+    }];
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  });
+
+  // Удалить комментарий может автор или админ.
+  route("DELETE", "/api/projects/:id/tasks/:taskId/comments/:commentId", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    if (hides(user, "tasks")) fail(403, "forbidden");
+    const task = findTask(p, params.taskId);
+    const comment = (task.comments || []).find((c) => c.id === params.commentId) || fail(404, "not_found");
+    if (!isAdmin(user) && comment.authorId !== user.id) fail(403, "forbidden");
+    task.comments = task.comments.filter((c) => c !== comment);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };

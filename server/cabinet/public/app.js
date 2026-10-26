@@ -388,18 +388,44 @@
     // У клиента с одним проектом «все проекты» — это он сам, стрелка назад не нужна.
     const back = admin || mine.projects.length > 1 ? backLink(me.role === "admin" ? "/admin" : "/", "Все проекты") : null;
 
-    async function toggle(task) {
-      try {
-        p = (await api("POST", `/api/projects/${p.id}/tasks/${task.id}/done`, { done: !task.done })).project;
+    const threads = new Set(); // открытые ветки комментариев
+    const act = {
+      async toggle(task) {
+        try {
+          p = (await api("POST", `/api/projects/${p.id}/tasks/${task.id}/done`, { done: !task.done })).project;
+          draw();
+          toast(task.done ? "Пункт снова открыт" : "Отметили: выполнено. Спасибо!");
+        } catch (err) {
+          toast(errorText(err));
+        }
+      },
+      isOpen: (id) => threads.has(id),
+      toggleThread(id) {
+        if (threads.has(id)) threads.delete(id);
+        else threads.add(id);
         draw();
-        toast(task.done ? "Задача снова в работе" : "Отметили: выполнено. Спасибо!");
-      } catch (err) {
-        toast(errorText(err));
-      }
-    }
+        root.querySelector(`[data-thread="${id}"] textarea`)?.focus({ preventScroll: true });
+      },
+      async comment(task, text) {
+        p = (await api("POST", `/api/projects/${p.id}/tasks/${task.id}/comments`, { text })).project;
+        draw();
+        toast("Комментарий отправлен");
+      },
+      async deleteComment(task, c) {
+        if (!confirm("Удалить комментарий?")) return;
+        try {
+          p = (await api("DELETE", `/api/projects/${p.id}/tasks/${task.id}/comments/${c.id}`)).project;
+          draw();
+        } catch (err) {
+          toast(errorText(err));
+        }
+      },
+    };
 
     function draw() {
-      const open = (p.tasks || []).filter((t) => !t.done);
+      // «Нужно от вас» — только пункты клуба, наши пункты в счёт не идут.
+      const open = (p.tasks || []).filter((t) => !t.done && t.side !== "team");
+      const checklist = (p.tasks || []).some((t) => t.group);
       const base = `/p/${p.id}`;
       const head = h("div", { class: "project-head" },
         h("div", {},
@@ -412,10 +438,10 @@
         link(base, { "aria-current": tab === "overview" ? "page" : null }, "Обзор"),
         p.tasks
           ? link(`${base}/tasks`, { "aria-current": tab === "tasks" ? "page" : null },
-            "Задачи для вас",
+            checklist ? "Чек-лист" : "Задачи для вас",
             open.length ? h("span", { class: "badge", text: String(open.length) }) : null)
           : null);
-      const body = tab === "tasks" && p.tasks ? tasksTab(p, toggle) : overviewTab(p, open);
+      const body = tab === "tasks" && p.tasks ? (checklist ? checklistView(p, act) : tasksTab(p, act.toggle)) : overviewTab(p, open);
       root.replaceChildren(...shell(head, tabs, body, contactBlock()));
     }
     draw();
@@ -433,7 +459,7 @@
             "Нужно от вас: ",
             h("b", { text: `${open.length} ${plural(open.length, "задача", "задачи", "задач")}` }),
             h("small", { text: nearest ? `Ближайший срок: ${fmtDate(nearest.due)}` : "Без срока" })),
-          btn("Открыть задачи", { href: `/p/${p.id}/tasks`, small: true }))
+          btn((p.tasks || []).some((t) => t.group) ? "Открыть чек-лист" : "Открыть задачи", { href: `/p/${p.id}/tasks`, small: true }))
         : null,
       h("section", { class: "status", "aria-label": "Статус проекта" },
         h("div", { class: "status__num", text: `${pct}%` }),
@@ -460,6 +486,95 @@
     ];
   }
 
+  // Чек-лист: разделы по порядку создания, в каждом «От клуба» и «От нас», у пунктов комментарии.
+  function checklistView(p, act) {
+    const tasks = [...p.tasks].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+    const groups = new Map();
+    for (const t of tasks) {
+      const g = t.group || "Другое";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    }
+    if (groups.has("Другое")) { // пункты без раздела — в конце
+      const rest = groups.get("Другое");
+      groups.delete("Другое");
+      groups.set("Другое", rest);
+    }
+    const ours = tasks.filter((t) => t.side === "team");
+    const theirs = tasks.filter((t) => t.side !== "team");
+    const doneOf = (list) => list.filter((t) => t.done).length;
+
+    const thread = (t) => {
+      const text = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Вопрос, уточнение или что уже сделано" });
+      const send = btn("Отправить", { type: "submit", small: true });
+      return h("div", { class: "thread", "data-thread": t.id },
+        (t.comments || []).map((c) => h("div", { class: "thread__item" },
+          h("p", { class: "thread__meta mono" },
+            `${c.author}${c.role === "client" ? "" : " · InData"} · ${fmtDate(c.at.slice(0, 10))}`,
+            me.role === "admin" || c.authorId === me.id
+              ? h("button", { class: "link-btn thread__del", type: "button", title: "Удалить комментарий", onclick: () => act.deleteComment(t, c), text: "удалить" })
+              : null),
+          h("p", { class: "thread__text", text: c.text }))),
+        h("form", {
+          class: "thread__form",
+          async onsubmit(e) {
+            e.preventDefault();
+            if (!text.value.trim()) return text.focus();
+            send.disabled = true;
+            try {
+              await act.comment(t, text.value);
+            } catch (err) {
+              toast(errorText(err));
+              send.disabled = false;
+            }
+          },
+        }, text, h("div", { class: "actions" }, send)));
+    };
+
+    const item = (t) => {
+      const canToggle = t.side !== "team" || me.role !== "client";
+      const overdue = !t.done && t.due && t.due < today();
+      const n = (t.comments || []).length;
+      return h("li", { class: `ci${t.done ? " is-done" : ""}` },
+        h("button", {
+          class: "ci__box", type: "button", disabled: !canToggle, "aria-pressed": String(t.done),
+          title: canToggle ? (t.done ? "Снять отметку" : "Отметить выполненным") : (t.done ? "Сделано" : "Это наш пункт"),
+          "aria-label": `${t.done ? "Снять отметку" : "Отметить выполненным"}: ${t.title}`,
+          onclick: () => act.toggle(t),
+        }),
+        h("div", { class: "ci__body" },
+          h("p", { class: "ci__title", text: t.title }),
+          t.text ? h("p", { class: "ci__text", text: t.text }) : null,
+          h("div", { class: "ci__meta" },
+            t.done
+              ? h("span", { class: "tag tag--ok", text: `Сделано ${fmtDate(t.doneAt.slice(0, 10))}${t.doneBy ? ` · ${t.doneBy}` : ""}` })
+              : t.due ? h("span", { class: `tag ${overdue ? "tag--due" : "muted"}`, text: `${overdue ? "Срок был" : "До"} ${fmtDate(t.due)}` }) : null,
+            t.url ? h("a", { class: "chip", href: t.url, target: "_blank", rel: "noopener noreferrer", text: `${hostOf(t.url)} ↗` }) : null,
+            h("button", { class: "link-btn ci__talk", type: "button", "aria-expanded": String(act.isOpen(t.id)), onclick: () => act.toggleThread(t.id), text: n ? `Комментарии · ${n}` : "Комментировать" })),
+          act.isOpen(t.id) ? thread(t) : null));
+    };
+    const column = (title, list, cls) => h("div", { class: `cl-col ${cls}` },
+      h("h4", { class: "mono", text: title }),
+      list.length ? h("ul", { class: "ci-list" }, list.map(item)) : h("p", { class: "empty", text: "Нет пунктов" }));
+
+    return h("section", { class: "checklist" },
+      h("p", { class: "lead tasks-lead", text: "Что нужно от клуба и что делаем мы. Отмечайте выполненное и пишите комментарии к любому пункту: мы видим сразу." }),
+      h("div", { class: "checklist__stats" },
+        h("div", {}, h("span", { text: "От клуба" }), h("b", { text: `${doneOf(theirs)} из ${theirs.length}` })),
+        h("div", {}, h("span", { text: "От нас" }), h("b", { text: `${doneOf(ours)} из ${ours.length}` }))),
+      [...groups].map(([g, list], i) => {
+        const open = list.filter((t) => !t.done && t.side !== "team" && t.due).map((t) => t.due).sort()[0];
+        return h("article", { class: "cl-group" },
+          h("header", { class: "cl-group__head" },
+            h("span", { class: "mono accent", text: String(i + 1).padStart(2, "0") }),
+            h("h3", { text: g }),
+            open ? h("span", { class: `cl-group__due${open < today() ? " is-late" : ""}`, text: `до ${fmtDate(open)}` }) : null),
+          h("div", { class: "cl-group__cols" },
+            column("От клуба", list.filter((t) => t.side !== "team"), "cl-col--club"),
+            column("От нас", list.filter((t) => t.side === "team"), "cl-col--team")));
+      }));
+  }
+
   function tasksTab(p, onToggle) {
     const done = p.tasks.filter((t) => t.done);
     return h("section", { class: "tasks-page" },
@@ -484,6 +599,7 @@
           h("p", { class: "task__title", text: t.title }),
           t.text ? h("p", { class: "task__text", text: t.text }) : null,
           h("div", { class: "task__meta" },
+            t.group ? h("span", { class: "mono", text: `${t.group} · ${t.side === "team" ? "наш пункт" : "пункт клуба"}` }) : null,
             t.done
               ? h("span", { class: "tag tag--ok", text: `Выполнено ${fmtDate(t.doneAt.slice(0, 10))}${t.doneBy ? ` · ${t.doneBy}` : ""}` })
               : t.due ? h("span", { class: `tag ${overdue ? "tag--due" : "muted"}`, text: `${overdue ? "Срок был" : "Сделать до"} ${fmtDate(t.due)}` }) : null,
@@ -868,6 +984,11 @@
     const taskDue = h("input", { class: "input", type: "date" });
     const taskText = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Что именно нужно и в каком виде" });
     const taskUrl = h("input", { class: "input", type: "url", maxlength: "500", placeholder: "https://… макеты, документ или форма, если нужна" });
+    const groupsListId = `task-groups-${Math.random().toString(36).slice(2, 8)}`;
+    const taskGroup = h("input", { class: "input", maxlength: "120", list: groupsListId, placeholder: "Например, Вход по SMS" });
+    const taskGroups = () => h("datalist", { id: groupsListId }, [...new Set(p.tasks.map((t) => t.group).filter(Boolean))].map((g) => h("option", { value: g })));
+    const groupsBox = h("span", {}, taskGroups());
+    const taskSide = h("select", { class: "select" }, h("option", { value: "client", text: "Пункт клуба" }), h("option", { value: "team", text: "Наш пункт" }));
     const taskError = h("p", { class: "form__error", hidden: true });
     const taskBtn = btn("Добавить задачу", { type: "submit" });
     const taskCancel = btn("Отмена", { variant: "light", hidden: true, onclick: () => resetTaskForm() });
@@ -898,6 +1019,8 @@
         taskDue.value = t.due;
         taskText.value = t.text;
         taskUrl.value = t.url;
+        taskGroup.value = t.group || "";
+        taskSide.value = t.side || "client";
         setBtnLabel(taskBtn, "Сохранить задачу");
         taskCancel.hidden = false;
         taskForm.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -915,13 +1038,14 @@
         e.preventDefault();
         taskError.hidden = true;
         taskBtn.disabled = true;
-        const body = { title: taskTitle.value, due: taskDue.value, text: taskText.value, url: taskUrl.value.trim() };
+        const body = { title: taskTitle.value, due: taskDue.value, text: taskText.value, url: taskUrl.value.trim(), group: taskGroup.value, side: taskSide.value };
         try {
           p = (editingTask
             ? await api("PATCH", `/api/admin/projects/${p.id}/tasks/${editingTask}`, body)
             : await api("POST", `/api/admin/projects/${p.id}/tasks`, body)).project;
           toast(editingTask ? "Задача обновлена" : "Задача добавлена, клиент её видит");
           resetTaskForm();
+          groupsBox.replaceChildren(taskGroups());
           renderTasks();
         } catch (err) {
           taskError.textContent = errorText(err);
@@ -934,6 +1058,9 @@
     h("div", { class: "grid-2" },
       h("label", { class: "field" }, h("span", { text: "Задача" }), taskTitle),
       h("label", { class: "field" }, h("span", { text: "Срок" }), taskDue)),
+    h("div", { class: "grid-2" },
+      h("label", { class: "field" }, h("span", { text: "Раздел чек-листа" }), taskGroup, groupsBox),
+      h("label", { class: "field" }, h("span", { text: "Чей пункт" }), taskSide)),
     h("label", { class: "field" }, h("span", { text: "Пояснение" }), taskText),
     h("label", { class: "field" }, h("span", { text: "Ссылка" }), taskUrl),
     taskError,
