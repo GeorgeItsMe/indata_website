@@ -76,6 +76,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   function projectView(p, user) {
     const view = {
       id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
+      // Процент можно поставить вручную; иначе он считается по статусам этапов.
+      progress: projectProgress(p), progressAuto: progress(p.stages), progressManual: Number.isInteger(p.progressOverride),
       stages: p.stages, payments: p.payments,
       updates: newestFirst(p.updates),
       meetings: newestFirst(p.meetings || []),
@@ -98,7 +100,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const active = stages.find((s) => s.status === "active");
     return {
       id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
-      progress: progress(stages),
+      progress: projectProgress(p),
       ...(hides(user, "payments") ? {} : {
         total: p.payments.reduce((n, x) => n + x.amount, 0),
         paid: p.payments.filter((x) => x.paid).reduce((n, x) => n + x.amount, 0),
@@ -322,6 +324,14 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if ("title" in body) p.title = required(str(body.title, 160), "title");
     if ("summary" in body) p.summary = str(body.summary, 600);
     if ("folder" in body) p.folder = str(body.folder, 120);
+    if ("progress" in body) {
+      if (body.progress === null || body.progress === "") delete p.progressOverride;
+      else {
+        const n = Number(body.progress);
+        if (!Number.isInteger(n) || n < 0 || n > 100) fail(400, "progress");
+        p.progressOverride = n;
+      }
+    }
     if ("clientIds" in body) p.clientIds = clientIdsOf(body.clientIds);
     if ("stages" in body) p.stages = list(body.stages, 20).map((s) => ({
       id: idOf(s.id),
@@ -665,6 +675,10 @@ function tasksOrder(tasks) {
     .sort(([a, i], [b, j]) => (a.due || "9999").localeCompare(b.due || "9999") || i - j).map(([t]) => t);
   const done = tasks.filter((t) => t.done).sort((a, b) => b.doneAt.localeCompare(a.doneAt));
   return [...open, ...done];
+}
+
+function projectProgress(p) {
+  return Number.isInteger(p.progressOverride) ? p.progressOverride : progress(p.stages);
 }
 
 function progress(stages) {

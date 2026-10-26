@@ -600,6 +600,9 @@ a.file:hover .file__name { color: var(--accent); }
 .edit-head--stage { grid-template-columns: minmax(120px, 1.4fr) 128px 140px 140px minmax(100px, 1.4fr) 104px; }
 .edit-head--pay { grid-template-columns: minmax(140px, 2fr) 140px 150px auto 40px; }
 .row-tools { display: flex; gap: 2px; }
+.progress-field { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; }
+.progress-field__input { width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+.progress-field__input::placeholder { color: #b5b5b5; }
 .clients-pick { display: flex; flex-wrap: wrap; gap: 10px 20px; }
 .perm-group + .perm-group { margin-top: 12px; }
 .perm-group__title { margin-bottom: 10px; font-weight: 500; }

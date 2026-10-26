@@ -307,6 +307,19 @@ test("смена роли: админ становится менеджером 
   await admin("DELETE", `/api/admin/users/${made.json.user.id}`);
 });
 
+test("процент проекта можно поставить вручную", async () => {
+  const auto = (await admin("GET", `/api/projects/${project.id}`)).json.project.progressAuto;
+  const r = await admin("PATCH", `/api/admin/projects/${project.id}`, { progress: 37 });
+  assert.equal(r.json.project.progress, 37);
+  assert.equal(r.json.project.progressManual, true);
+  assert.equal((await clientA.call("GET", "/api/projects")).json.projects.find((x) => x.id === project.id).progress, 37);
+  assert.equal((await admin("PATCH", `/api/admin/projects/${project.id}`, { progress: 150 })).status, 400);
+  assert.equal((await admin("PATCH", `/api/admin/projects/${project.id}`, { progress: 12.5 })).status, 400);
+  const back = await admin("PATCH", `/api/admin/projects/${project.id}`, { progress: null });
+  assert.equal(back.json.project.progress, auto, "пусто — снова по этапам");
+  assert.equal(back.json.project.progressManual, false);
+});
+
 test("смена пароля, сброс и блокировка закрывают сессии", async () => {
   const a = clientA.call;
   assert.equal((await a("POST", "/api/password", { current: "wrong", next: "new-password-1" })).status, 400);

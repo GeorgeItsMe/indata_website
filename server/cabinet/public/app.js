@@ -424,7 +424,7 @@
   function overviewTab(p, open) {
     const active = p.stages.find((s) => s.status === "active");
     const finished = p.stages.length > 0 && p.stages.every((s) => s.status === "done");
-    const pct = progressOf(p.stages);
+    const pct = p.progress ?? progressOf(p.stages);
     const nearest = open.find((t) => t.due);
     return [
       open.length
@@ -796,12 +796,19 @@
     const picks = clientPicker(clients, p.clientIds);
     for (const box of picks.boxes) box.addEventListener("change", markDirty);
 
+    // Процент: вручную или, если поле пустое, по статусам этапов (подсказка в поле).
+    const progressInput = h("input", {
+      class: "input input--sm progress-field__input", type: "number", min: "0", max: "100", step: "1",
+      value: p.progressManual ? String(p.progress) : "", "aria-label": "Прогресс проекта, %", oninput: markDirty,
+    });
+
     // Этапы
     const stageRows = h("div", { class: "edit-rows" });
     function renderStages() {
+      progressInput.placeholder = String(progressOf(stages.filter((s) => s.title.trim())));
       stageRows.replaceChildren(...stages.map((s, i) => h("div", { class: "edit-row edit-row--stage" },
         h("input", { class: "input input--sm", value: s.title, placeholder: "Этап", "aria-label": "Название этапа", oninput: (e) => { s.title = e.target.value; markDirty(); } }),
-        h("select", { class: "select select--sm", "aria-label": "Статус", onchange: (e) => { s.status = e.target.value; markDirty(); } },
+        h("select", { class: "select select--sm", "aria-label": "Статус", onchange: (e) => { s.status = e.target.value; progressInput.placeholder = String(progressOf(stages)); markDirty(); } },
           Object.entries(STATUS_LABELS).map(([value, label]) => h("option", { value, selected: s.status === value, text: label }))),
         h("input", { class: "input input--sm", type: "date", value: s.start, "aria-label": "Начало", oninput: (e) => { s.start = e.target.value; markDirty(); } }),
         h("input", { class: "input input--sm", type: "date", value: s.end, "aria-label": "Срок", oninput: (e) => { s.end = e.target.value; markDirty(); } }),
@@ -829,6 +836,7 @@
           title: titleInput.value,
           summary: summaryInput.value,
           stages: stages.map((s) => ({ ...s, title: s.title.trim() })).filter((s) => s.title),
+          progress: progressInput.value === "" ? null : Number(progressInput.value),
         };
         if (isAdmin) {
           body.folder = folderInput.input.value;
@@ -839,6 +847,7 @@
         p = { ...p, ...res.project };
         stages.splice(0, stages.length, ...structuredClone(p.stages));
         payments.splice(0, payments.length, ...structuredClone(p.payments || []));
+        progressInput.value = p.progressManual ? String(p.progress) : "";
         renderStages();
         renderPayments();
         dirty = false;
@@ -1119,7 +1128,12 @@
             ? h("div", { class: "field" }, h("span", { text: "Кому открыт проект" }), picks.el)
             : p.clients?.length ? h("p", { class: "mono", text: `Клиент: ${p.clients.map((c) => c.name).join(", ")}` }) : null),
         h("section", { class: "card form" },
-          h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Этапы" }), h("span", { class: "mono", text: "Прогресс считается по статусам этапов" })),
+          h("div", { class: "section-head" },
+            h("h2", { class: "h2", text: "Этапы" }),
+            h("label", { class: "progress-field" },
+              h("span", { text: "Прогресс, %" }),
+              progressInput,
+              h("small", { class: "mono", text: "пусто: считаем по этапам" }))),
           h("div", { class: "edit-head edit-head--stage" }, ["Этап", "Статус", "Начало", "Срок", "Комментарий", ""].map((t) => h("span", { text: t }))),
           stageRows,
           h("div", { class: "actions" }, btn("Добавить этап", {
