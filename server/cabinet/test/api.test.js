@@ -352,6 +352,12 @@ test("папки людей: создать, переложить, переим�
   assert.deepEqual(renamed.json.folders, ["Empire Poker Club", "Подрядчики"], "порядок папок сохраняется");
   assert.equal(renamed.json.users.find((u) => u.id === clientA.user.id).folder, "Empire Poker Club");
 
+  const order = await admin("POST", "/api/admin/people-folders/order", { folders: ["Подрядчики", "Empire Poker Club"] });
+  assert.deepEqual(order.json.folders, ["Подрядчики", "Empire Poker Club"]);
+  assert.equal((await admin("POST", "/api/admin/people-folders/order", { folders: ["Подрядчики"] })).status, 400, "папку не потерять");
+  assert.equal((await admin("POST", "/api/admin/people-folders/order", { folders: ["Подрядчики", "Подрядчики"] })).status, 400);
+  assert.equal((await admin("POST", "/api/admin/people-folders/order", { folders: ["Подрядчики", "Чужая"] })).status, 400);
+
   const removed = await admin("POST", "/api/admin/people-folders/delete", { name: "Empire Poker Club" });
   assert.deepEqual(removed.json.folders, ["Подрядчики"]);
   assert.equal(removed.json.users.find((u) => u.id === clientA.user.id).folder, "", "человек остаётся, просто без папки");
@@ -359,6 +365,18 @@ test("папки людей: создать, переложить, переим�
 
   await admin("DELETE", `/api/admin/users/${added.json.user.id}`);
   await admin("POST", "/api/admin/people-folders/delete", { name: "Подрядчики" });
+});
+
+test("ссылки в документах", async () => {
+  const r = await admin("POST", `/api/admin/projects/${project.id}/links`, { name: "Макеты в Figma", url: "https://figma.com/design/x" });
+  assert.equal(r.status, 201);
+  const [link] = r.json.project.links;
+  assert.equal(link.name, "Макеты в Figma");
+  assert.equal((await admin("POST", `/api/admin/projects/${project.id}/links`, { name: "x", url: "javascript:alert(1)" })).status, 400);
+  assert.equal((await admin("POST", `/api/admin/projects/${project.id}/links`, { url: "https://a.ru" })).status, 400);
+  assert.deepEqual((await clientA.call("GET", `/api/projects/${project.id}`)).json.project.links.map((l) => l.url), ["https://figma.com/design/x"]);
+  assert.equal((await clientA.call("POST", `/api/admin/projects/${project.id}/links`, { name: "x", url: "https://a.ru" })).status, 403);
+  assert.equal((await admin("DELETE", `/api/admin/projects/${project.id}/links/${link.id}`)).json.project.links.length, 0);
 });
 
 test("заявки на звонок видит только админ", async () => {

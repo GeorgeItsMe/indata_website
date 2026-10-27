@@ -96,6 +96,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       meetings: newestFirst(p.meetings || []),
       tasks: tasksOrder(p.tasks || []),
       files: p.files.map(({ id, name, size, type, uploadedAt }) => ({ id, name, size, type, uploadedAt })),
+      links: p.links || [], // ссылки в «Документах»: Figma, диск, таблицы
     };
     if (isAdmin(user)) {
       view.clientIds = p.clientIds;
@@ -104,6 +105,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if (isManager(user)) {
       view.clients = clientNames(p).map((u) => ({ name: u.name, company: u.company || "" }));
       for (const block of ["payments", ...BLOCKS]) if (hides(user, block)) delete view[block];
+      if (!view.files) delete view.links;
     }
     return view;
   }
@@ -311,6 +313,17 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if (to !== from && peopleFolders().includes(to)) fail(409, "folder_taken");
     db.peopleFolders = peopleFolders().map((f) => (f === from ? to : f));
     for (const u of db.users) if (u.folder === from) u.folder = to;
+    store.save();
+    return { body: peopleBody() };
+  }, "admin");
+
+  // Новый порядок папок: тот же набор названий, переставленный.
+  route("POST", "/api/admin/people-folders/order", async ({ body }) => {
+    const current = peopleFolders();
+    if (!Array.isArray(body.folders)) fail(400, "folders");
+    const order = body.folders.map((f) => str(f, 120));
+    if (order.length !== current.length || new Set(order).size !== order.length || !order.every((f) => current.includes(f))) fail(400, "folders");
+    db.peopleFolders = order;
     store.save();
     return { body: peopleBody() };
   }, "admin");
@@ -637,6 +650,28 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const p = findEditable(user, params.id, "project");
     if (p.logo) store.deleteFile(p.logo.id);
     delete p.logo;
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "staff");
+
+  route("POST", "/api/admin/projects/:id/links", async ({ user, params, body }) => {
+    const p = findEditable(user, params.id, "files");
+    p.links = [...(p.links || []), {
+      id: store.id(),
+      name: required(str(body.name, 160), "link_name"),
+      url: urlOf(body.url),
+      addedAt: new Date(now()).toISOString(),
+    }];
+    touch(p);
+    store.save();
+    return { status: 201, body: { project: projectView(p, user) } };
+  }, "staff");
+
+  route("DELETE", "/api/admin/projects/:id/links/:linkId", async ({ user, params }) => {
+    const p = findEditable(user, params.id, "files");
+    if (!(p.links || []).some((l) => l.id === params.linkId)) fail(404, "not_found");
+    p.links = p.links.filter((l) => l.id !== params.linkId);
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };

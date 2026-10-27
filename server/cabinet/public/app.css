@@ -672,6 +672,9 @@ a.file:hover .file__name { color: var(--accent); }
 
 /* Люди по папкам: строку перетаскивают мышкой в папку */
 .people-hint { font-size: 14px; }
+.people-tools { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; }
+.people-search { flex: 0 1 420px; }
+.people-found { font-size: 14px; }
 /* Одинаковые колонки во всех папках; на телефоне строки и так идут карточками */
 @media (min-width: 641px) {
   .people .table { table-layout: fixed; }
@@ -688,6 +691,16 @@ a.file:hover .file__name { color: var(--accent); }
 .people.is-dragging .people-folder.is-drop { background: var(--soft); box-shadow: 0 0 0 10px var(--soft), 0 0 0 12px var(--accent); }
 .people-folder > .folder__head { padding-top: 4px; }
 .people-folder .folder__head .row-tools { flex: none; }
+.people-folder .folder__head[draggable] { cursor: grab; }
+.people-folder .icon-btn:disabled { opacity: .3; cursor: default; }
+/* Перестановка папок: тащимую приглушаем, место вставки показываем красной линией */
+.people-folder { position: relative; }
+.people.is-sorting .people-folder.is-dragging { opacity: .4; }
+.people-folder.is-before::before, .people-folder.is-after::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent);
+}
+.people-folder.is-before::before { top: -14px; }
+.people-folder.is-after::after { bottom: -14px; }
 .people-folder__empty { padding: 16px 0 4px; }
 .table td .actions { justify-content: flex-end; flex-wrap: nowrap; }
 
@@ -742,6 +755,8 @@ a.file:hover .file__name { color: var(--accent); }
 }
 .save-bar .btn--light { background: #fff; }
 .upload { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.link-form { display: grid; grid-template-columns: 1fr 1.4fr auto auto; gap: 8px; align-items: center; }
+@media (max-width: 640px) { .link-form { grid-template-columns: 1fr 1fr; } .link-form .input { grid-column: 1 / -1; } }
 
 /* ---------- Уведомление ---------- */
 .toast {

@@ -811,24 +811,28 @@
       filesList(p));
   }
 
-  function filesList(p, onDelete = null) {
-    return p.files.length
-        ? h("ul", { class: "rows" }, p.files.map((f) => {
-          const ext = f.name.includes(".") ? f.name.split(".").pop().slice(0, 4) : "file";
-          const body = [
-            h("div", { class: "row__main" },
-              h("span", { class: "file__icon", text: ext }),
-              h("div", { class: "file__meta" },
-                h("div", { class: "file__name", text: f.name }),
-                h("small", { text: `${fileSize(f.size)} · ${fmtDate(f.uploadedAt.slice(0, 10))}` }))),
-          ];
-          const href = `/api/projects/${p.id}/files/${f.id}`;
-          if (!onDelete) return h("li", {}, h("a", { class: "row file", href, target: "_blank", rel: "noopener" }, body, h("span", { class: "mono file__open", text: "Открыть ↗" })));
-          return h("li", { class: "row file" }, body, h("div", { class: "row-tools" },
-            h("a", { class: "icon-btn", href, target: "_blank", rel: "noopener", title: "Открыть", "aria-label": "Открыть", text: "↗" }),
-            h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить ${f.name}`, onclick: () => onDelete(f), text: "✕" })));
-        }))
-      : h("p", { class: "empty", text: "Договор, акты и макеты появятся здесь." });
+  // Документы: загруженные файлы и ссылки (Figma, диск, таблицы). С onDelete — режим правки.
+  function filesList(p, onDelete = null, onDeleteLink = null) {
+    const links = p.links || [];
+    if (!p.files.length && !links.length) return h("p", { class: "empty", text: "Договор, акты и макеты появятся здесь." });
+    const row = (item, { icon, meta, href, rel, remove }) => {
+      const body = h("div", { class: "row__main" },
+        h("span", { class: "file__icon", text: icon }),
+        h("div", { class: "file__meta" }, h("div", { class: "file__name", text: item.name }), h("small", { text: meta })));
+      if (!remove) return h("li", {}, h("a", { class: "row file", href, target: "_blank", rel }, body, h("span", { class: "mono file__open", text: "Открыть ↗" })));
+      return h("li", { class: "row file" }, body, h("div", { class: "row-tools" },
+        h("a", { class: "icon-btn", href, target: "_blank", rel, title: "Открыть", "aria-label": "Открыть", text: "↗" }),
+        h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить ${item.name}`, onclick: () => remove(item), text: "✕" })));
+    };
+    return h("ul", { class: "rows" },
+      p.files.map((f) => row(f, {
+        icon: f.name.includes(".") ? f.name.split(".").pop().slice(0, 4) : "file",
+        meta: `${fileSize(f.size)} · ${fmtDate(f.uploadedAt.slice(0, 10))}`,
+        href: `/api/projects/${p.id}/files/${f.id}`,
+        rel: "noopener",
+        remove: onDelete,
+      })),
+      links.map((l) => row(l, { icon: "link", meta: hostOf(l.url), href: l.url, rel: "noopener noreferrer", remove: onDeleteLink })));
   }
 
   function contactBlock() {
@@ -1315,7 +1319,38 @@
       } catch (err) {
         toast(errorText(err));
       }
+    }, async (l) => {
+      if (!confirm(`Удалить ссылку «${l.name}»?`)) return;
+      try {
+        p = (await api("DELETE", `/api/admin/projects/${p.id}/links/${l.id}`)).project;
+        renderFiles();
+      } catch (err) {
+        toast(errorText(err));
+      }
     }));
+    // Ссылка в документы: название и адрес.
+    const linkName = h("input", { class: "input input--sm", maxlength: "160", required: true, placeholder: "Название, например «Макеты в Figma»" });
+    const linkUrl = h("input", { class: "input input--sm", type: "url", required: true, placeholder: "https://…" });
+    const closeLinkForm = () => {
+      linkForm.reset();
+      linkForm.hidden = true;
+    };
+    const linkForm = h("form", {
+      class: "link-form",
+      hidden: true,
+      async onsubmit(e) {
+        e.preventDefault();
+        try {
+          p = (await api("POST", `/api/admin/projects/${p.id}/links`, { name: linkName.value, url: linkUrl.value.trim() })).project;
+          closeLinkForm();
+          renderFiles();
+          toast("Ссылка добавлена");
+        } catch (err) {
+          toast(errorText(err));
+        }
+      },
+    }, linkName, linkUrl, btn("Добавить", { type: "submit", small: true }), btn("Отмена", { variant: "light", small: true, onclick: closeLinkForm }));
+    const linkBtn = btn("Добавить ссылку", { variant: "light", small: true, onclick: () => { linkForm.hidden = false; linkName.focus(); } });
     renderFiles();
     // Кнопка открывает выбор файлов, выбранное сразу загружается.
     const uploadBtn = btn("Загрузить файлы", { variant: "light", small: true });
@@ -1345,26 +1380,30 @@
     const logoBox = h("div", { class: "logo-field" });
     const logoInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: true });
     const logoBtn = btn("Загрузить", { variant: "light", small: true, onclick: () => logoInput.click() });
-    const renderLogo = () => logoBox.replaceChildren(
-      p.logo ? h("img", { class: "project-logo", src: logoSrc(p), alt: "Логотип проекта" }) : null,
-      h("div", { class: "actions" },
-        logoBtn,
-        p.logo
-          ? btn("Убрать", {
-            variant: "light",
-            small: true,
-            async onclick() {
-              try {
-                p = (await api("DELETE", `/api/admin/projects/${p.id}/logo`)).project;
-                renderLogo();
-                toast("Логотип убран");
-              } catch (err) {
-                toast(errorText(err));
-              }
-            },
-          })
-          : null),
-      h("small", { class: "muted", text: "PNG, JPEG или WebP до 1 МБ, лучше квадратный знак" }));
+    // append пропускает null; replaceChildren вывел бы его текстом.
+    const renderLogo = () => {
+      logoBox.replaceChildren();
+      append(logoBox, [
+        p.logo ? h("img", { class: "project-logo", src: logoSrc(p), alt: "Логотип проекта" }) : null,
+        h("div", { class: "actions" },
+          logoBtn,
+          p.logo
+            ? btn("Убрать", {
+              variant: "light",
+              small: true,
+              async onclick() {
+                try {
+                  p = (await api("DELETE", `/api/admin/projects/${p.id}/logo`)).project;
+                  renderLogo();
+                  toast("Логотип убран");
+                } catch (err) {
+                  toast(errorText(err));
+                }
+              },
+            })
+            : null),
+        h("small", { class: "muted", text: "PNG, JPEG или WebP до 1 МБ, лучше квадратный знак" })]);
+    };
     logoInput.addEventListener("change", async () => {
       const [file] = logoInput.files;
       if (!file) return;
@@ -1451,7 +1490,8 @@
           feedBox),
         !show.files ? null : h("section", { class: "card stack" },
           h("div", { class: "section-head" }, h("h2", { class: "h2", text: "Документы" }), h("span", { class: "mono", text: "До 25 МБ на файл" })),
-          h("div", { class: "upload" }, uploadBtn, fileInput),
+          h("div", { class: "upload" }, uploadBtn, linkBtn, fileInput),
+          linkForm,
           filesBox),
         isAdmin ? h("div", { class: "actions" }, removeBtn) : null),
     ));
@@ -1636,9 +1676,18 @@
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
 
     // Люди по папкам. Строку можно перетащить мышкой в другую папку; на телефоне папка выбирается в карточке.
+    // Папки переставляются перетаскиванием заголовка или стрелками.
     const listBox = h("div", { class: "people" });
-    const hint = h("p", { class: "muted people-hint", text: "Чтобы разложить людей по папкам, перетащите строку мышкой в нужную папку. На телефоне папка выбирается в карточке человека (✎)." });
-    let dragging = null; // кого тащим
+    const hint = h("p", { class: "muted people-hint", text: "Чтобы разложить людей по папкам, перетащите строку мышкой в нужную папку, а папки переставляйте за заголовок или стрелками. На телефоне папка выбирается в карточке человека (✎)." });
+    const search = h("input", {
+      class: "input people-search", type: "search", placeholder: "Найти: имя, компания, логин, контакт", "aria-label": "Поиск по людям",
+      oninput: () => renderTable(),
+      onkeydown: (e) => { if (e.key === "Escape" && search.value) { search.value = ""; renderTable(); } },
+    });
+    const found = h("p", { class: "muted people-found", hidden: true });
+    const matches = (u, q) => [u.name, u.company, u.login, u.contact, u.folder, ROLE_LABELS[u.role]].some((v) => (v || "").toLowerCase().includes(q));
+    let dragging = null;       // кого из людей тащим
+    let draggingFolder = null; // какую папку переставляем
     const tool = (label, text, onclick, danger = false) => h("button", {
       class: `icon-btn${danger ? " icon-btn--danger" : ""}`, type: "button", title: label, "aria-label": label, text,
       onclick: (e) => { e.preventDefault(); onclick(); }, // кнопка в заголовке папки не должна её сворачивать
@@ -1665,6 +1714,15 @@
       if (!to?.trim() || to.trim() === folder) return;
       folderAction(() => api("POST", "/api/admin/people-folders/rename", { from: folder, to }), "Папка переименована");
     }
+    function reorderFolders(order) {
+      folderAction(() => api("POST", "/api/admin/people-folders/order", { folders: order }), "Порядок папок сохранён");
+    }
+    // Папка встаёт на место той, на которую её бросили (или сдвигается стрелкой на одну позицию).
+    function placeFolder(folder, index) {
+      const order = folders.filter((f) => f !== folder);
+      order.splice(index, 0, folder);
+      reorderFolders(order);
+    }
     function deleteFolder(folder, count) {
       if (!confirm(count ? `Удалить папку «${folder}»? Люди из неё (${count}) останутся, просто без папки.` : `Удалить пустую папку «${folder}»?`)) return;
       folderAction(() => api("POST", "/api/admin/people-folders/delete", { name: folder }), "Папка удалена");
@@ -1681,40 +1739,69 @@
     }
     const stopDrag = () => {
       dragging = null;
-      listBox.classList.remove("is-dragging");
-      for (const el of listBox.querySelectorAll(".is-dragging, .is-drop")) el.classList.remove("is-dragging", "is-drop");
+      draggingFolder = null;
+      listBox.classList.remove("is-dragging", "is-sorting");
+      for (const el of listBox.querySelectorAll(".is-dragging, .is-drop, .is-before, .is-after")) el.classList.remove("is-dragging", "is-drop", "is-before", "is-after");
     };
 
     const peopleTable = (list) => h("div", { class: "card table-wrap" }, h("table", { class: "table" },
       h("colgroup", {}, h("col"), h("col"), h("col"), h("col", { class: "people__actions" })),
       h("tbody", {}, list.map(personRow))));
 
-    function folderSection(folder, list) {
+    function folderSection(folder, list, searching) {
+      const index = folders.indexOf(folder); // -1 у «Без папки»: она всегда последняя и не переставляется
+      const up = tool("Папку выше", "↑", () => placeFolder(folder, index - 1));
+      const down = tool("Папку ниже", "↓", () => placeFolder(folder, index + 1));
+      up.disabled = index <= 0;
+      down.disabled = index === folders.length - 1;
       const section = h("details", {
         class: "folder people-folder",
-        open: !collapsedFolders(PEOPLE_FOLDERS_KEY).has(folder),
-        ontoggle: (e) => rememberFolder(folder, e.currentTarget.open, PEOPLE_FOLDERS_KEY),
+        open: searching || !collapsedFolders(PEOPLE_FOLDERS_KEY).has(folder),
+        ontoggle: (e) => { if (!searching) rememberFolder(folder, e.currentTarget.open, PEOPLE_FOLDERS_KEY); },
         ondragover(e) {
+          if (draggingFolder) {
+            if (!folder || folder === draggingFolder) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            section.classList.add(folders.indexOf(draggingFolder) > index ? "is-before" : "is-after");
+            return;
+          }
           if (!dragging || dragging.folder === folder) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
           section.classList.add("is-drop");
         },
         ondragleave(e) {
-          if (!section.contains(e.relatedTarget)) section.classList.remove("is-drop");
+          if (!section.contains(e.relatedTarget)) section.classList.remove("is-drop", "is-before", "is-after");
         },
         ondrop(e) {
           e.preventDefault();
           const u = dragging;
+          const moved = draggingFolder;
           stopDrag();
-          if (u && u.folder !== folder) moveTo(u, folder);
+          if (moved && folder && moved !== folder) placeFolder(moved, index);
+          else if (u && u.folder !== folder) moveTo(u, folder);
         },
       },
-      h("summary", { class: "folder__head" },
+      h("summary", {
+        class: "folder__head",
+        draggable: folder ? "true" : null,
+        title: folder ? "Перетащите, чтобы переставить папку" : null,
+        ondragstart(e) {
+          if (e.target !== e.currentTarget) return;
+          draggingFolder = folder;
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", folder);
+          section.classList.add("is-dragging");
+          listBox.classList.add("is-sorting");
+        },
+        ondragend: stopDrag,
+      },
         h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
         h("span", { class: "folder__totals mono", text: `${list.length} ${plural(list.length, "человек", "человека", "человек")}` }),
         folder
           ? h("span", { class: "row-tools" },
+            up, down,
             tool("Переименовать папку", "✎", () => renameFolder(folder)),
             tool("Удалить папку", "✕", () => deleteFolder(folder, list.length), true))
           : null,
@@ -1724,11 +1811,20 @@
     }
 
     function renderTable() {
-      hint.hidden = !folders.length;
+      const q = search.value.trim().toLowerCase();
+      const shown = q ? users.filter((u) => matches(u, q)) : users;
+      hint.hidden = !folders.length || Boolean(q);
+      found.hidden = !q;
+      found.textContent = shown.length
+        ? `Найдено: ${shown.length}`
+        : "Никого не нашли. Ищем по имени, компании, логину, контакту, роли и папке.";
       // Пока папок нет, список как раньше; без папки — в конце, как у проектов.
-      if (!folders.length) return listBox.replaceChildren(peopleTable(users));
-      const groups = [...folders.map((f) => [f, users.filter((u) => u.folder === f)]), ["", users.filter((u) => !u.folder)]];
-      listBox.replaceChildren(...groups.filter(([f, list]) => f || list.length).map(([f, list]) => folderSection(f, list)));
+      if (!folders.length) return listBox.replaceChildren(shown.length ? peopleTable(shown) : "");
+      const groups = [...folders.map((f) => [f, shown.filter((u) => u.folder === f)]), ["", shown.filter((u) => !u.folder)]];
+      // При поиске видны только папки с найденными, и они раскрыты.
+      listBox.replaceChildren(...groups
+        .filter(([f, list]) => (q ? list.length : f || list.length))
+        .map(([f, list]) => folderSection(f, list, Boolean(q))));
     }
 
     function personRow(u) {
@@ -1796,7 +1892,7 @@
       h("div", { class: "project-head" },
         h("div", {}, h("span", { class: "eyebrow mono", text: "Админка" }), h("h1", { class: "h1", text: "Люди" })),
         h("div", { class: "actions" }, btn("Новая папка", { variant: "light", onclick: createFolder }), btn("Добавить", { onclick: () => openForm() }))),
-      h("div", { class: "stack mt-32" }, form, secretBox, hint, listBox),
+      h("div", { class: "stack mt-32" }, form, secretBox, h("div", { class: "people-tools" }, search, found), hint, listBox),
     ));
   }
 
