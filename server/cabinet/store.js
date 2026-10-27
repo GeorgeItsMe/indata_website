@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const EMPTY = { users: [], projects: [], sessions: [] };
+const EMPTY = { users: [], projects: [], sessions: [], peopleFolders: [] };
 
 function createStore(dir) {
   const file = dir ? path.join(dir, "db.json") : null;

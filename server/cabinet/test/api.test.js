@@ -332,6 +332,35 @@ test("логотип проекта: только картинка, видят �
   assert.equal((await clientA.call("GET", `/api/projects/${project.id}/logo`)).status, 404);
 });
 
+test("папки людей: создать, переложить, переименовать, удалить", async () => {
+  const made = await admin("POST", "/api/admin/people-folders", { name: "Empire" });
+  assert.equal(made.status, 201);
+  assert.deepEqual(made.json.folders, ["Empire"]);
+  assert.equal((await admin("POST", "/api/admin/people-folders", { name: "Empire" })).status, 409);
+  assert.equal((await admin("POST", "/api/admin/people-folders", { name: " " })).status, 400);
+
+  const moved = await admin("PATCH", `/api/admin/users/${clientA.user.id}`, { folder: "Empire" });
+  assert.equal(moved.json.user.folder, "Empire");
+  const added = await admin("POST", "/api/admin/users", { name: "Подрядчик", login: "contractor", folder: "Подрядчики" });
+  assert.equal(added.json.user.folder, "Подрядчики");
+  assert.deepEqual((await admin("GET", "/api/admin/users")).json.folders, ["Empire", "Подрядчики"], "новая папка из карточки попадает в список");
+  assert.equal((await clientA.call("GET", "/api/me")).json.user.folder, undefined, "клиент не видит, в какой он папке");
+  assert.equal((await clientA.call("POST", "/api/admin/people-folders", { name: "x" })).status, 403);
+
+  assert.equal((await admin("POST", "/api/admin/people-folders/rename", { from: "Empire", to: "Подрядчики" })).status, 409);
+  const renamed = await admin("POST", "/api/admin/people-folders/rename", { from: "Empire", to: "Empire Poker Club" });
+  assert.deepEqual(renamed.json.folders, ["Empire Poker Club", "Подрядчики"], "порядок папок сохраняется");
+  assert.equal(renamed.json.users.find((u) => u.id === clientA.user.id).folder, "Empire Poker Club");
+
+  const removed = await admin("POST", "/api/admin/people-folders/delete", { name: "Empire Poker Club" });
+  assert.deepEqual(removed.json.folders, ["Подрядчики"]);
+  assert.equal(removed.json.users.find((u) => u.id === clientA.user.id).folder, "", "человек остаётся, просто без папки");
+  assert.equal((await clientA.call("GET", "/api/projects")).json.projects.length, 1, "на доступ к проектам папка не влияет");
+
+  await admin("DELETE", `/api/admin/users/${added.json.user.id}`);
+  await admin("POST", "/api/admin/people-folders/delete", { name: "Подрядчики" });
+});
+
 test("заявки на звонок видит только админ", async () => {
   const r = await admin("GET", "/api/admin/bookings");
   assert.equal(r.status, 200);

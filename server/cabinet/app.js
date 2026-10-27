@@ -71,6 +71,11 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     ...(u.role === "client" ? { projectIds: db.projects.filter((p) => p.clientIds.includes(u.id)).map((p) => p.id) } : {}),
   });
 
+  // Папки людей видит только админ: в /api/me и в проектах их нет.
+  const adminUser = (u) => ({ ...publicUser(u), folder: u.folder || "" });
+  const peopleFolders = () => [...new Set([...db.peopleFolders, ...db.users.map((u) => u.folder).filter(Boolean)])];
+  const peopleBody = () => ({ users: db.users.map(adminUser), folders: peopleFolders() });
+
   /* ---------- Права ----------
      admin   — всё.
      client  — читает проекты, где он в clientIds, отмечает свои задачи.
@@ -206,7 +211,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   });
 
   /* ---------- Админка: клиенты ---------- */
-  route("GET", "/api/admin/users", async () => ({ body: { users: db.users.map(publicUser) } }), "admin");
+  route("GET", "/api/admin/users", async () => ({ body: peopleBody() }), "admin");
 
   route("POST", "/api/admin/users", async ({ body }) => {
     const user = {
@@ -215,6 +220,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       name: required(str(body.name, 120), "name"),
       company: str(body.company, 120),
       contact: str(body.contact, 120),
+      folder: str(body.folder, 120),
       role: ["admin", "manager"].includes(body.role) ? body.role : "client",
       createdAt: new Date(now()).toISOString(),
     };
@@ -224,12 +230,13 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     }
     const clientProjects = user.role === "client" ? projectIdsOf(body.projectIds ?? []) : [];
     if (db.users.some((u) => u.login === user.login)) fail(409, "login_taken");
+    folderOf(user.folder);
     const password = generatePassword();
     user.password = hashPassword(password);
     db.users.push(user);
     if (clientProjects.length) setClientProjects(user, clientProjects);
     store.save();
-    return { status: 201, body: { user: publicUser(user), password } };
+    return { status: 201, body: { user: adminUser(user), password } };
   }, "admin");
 
   route("PATCH", "/api/admin/users/:id", async ({ user: me, params, body }) => {
@@ -237,6 +244,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if ("name" in body) user.name = required(str(body.name, 120), "name");
     if ("company" in body) user.company = str(body.company, 120);
     if ("contact" in body) user.contact = str(body.contact, 120);
+    if ("folder" in body) user.folder = folderOf(body.folder);
     // Смена роли: себе нельзя; менеджеру сразу задаются проекты, у остальных доступ по проектам снимается.
     if ("role" in body && body.role !== user.role) {
       if (user.id === me.id) fail(400, "self");
@@ -265,7 +273,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       if (user.disabled) sessions.destroyAllFor(user.id);
     }
     store.save();
-    return { body: { user: publicUser(user) } };
+    return { body: { user: adminUser(user) } };
   }, "admin");
 
   route("POST", "/api/admin/users/:id/password", async ({ params }) => {
@@ -284,6 +292,36 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     for (const p of db.projects) p.clientIds = p.clientIds.filter((id) => id !== params.id);
     sessions.destroyAllFor(params.id); // сохраняет базу
     return { body: { ok: true } };
+  }, "admin");
+
+  /* ---------- Админка: папки людей ----------
+     Папка нужна только для порядка в списке «Люди», на доступ к проектам она не влияет. */
+  route("POST", "/api/admin/people-folders", async ({ body }) => {
+    const name = required(str(body.name, 120), "folder");
+    if (peopleFolders().includes(name)) fail(409, "folder_taken");
+    db.peopleFolders.push(name);
+    store.save();
+    return { status: 201, body: peopleBody() };
+  }, "admin");
+
+  route("POST", "/api/admin/people-folders/rename", async ({ body }) => {
+    const from = str(body.from, 120);
+    const to = required(str(body.to, 120), "folder");
+    if (!peopleFolders().includes(from)) fail(404, "not_found");
+    if (to !== from && peopleFolders().includes(to)) fail(409, "folder_taken");
+    db.peopleFolders = peopleFolders().map((f) => (f === from ? to : f));
+    for (const u of db.users) if (u.folder === from) u.folder = to;
+    store.save();
+    return { body: peopleBody() };
+  }, "admin");
+
+  // Люди из удалённой папки остаются, просто без папки.
+  route("POST", "/api/admin/people-folders/delete", async ({ body }) => {
+    const name = str(body.name, 120);
+    db.peopleFolders = peopleFolders().filter((f) => f !== name);
+    for (const u of db.users) if (u.folder === name) u.folder = "";
+    store.save();
+    return { body: peopleBody() };
   }, "admin");
 
   /* ---------- Админка: заявки на звонок с indata.group ----------
@@ -652,6 +690,12 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       if (ids.includes(p.id) && !has) p.clientIds = [...p.clientIds, user.id];
       if (!ids.includes(p.id) && has) p.clientIds = p.clientIds.filter((id) => id !== user.id);
     }
+  }
+  // Новая папка из карточки человека сразу попадает в список папок.
+  function folderOf(v) {
+    const name = str(v, 120);
+    if (name && !db.peopleFolders.includes(name)) db.peopleFolders.push(name);
+    return name;
   }
   function hideOf(v) {
     if (!Array.isArray(v)) fail(400, "hide");

@@ -15,6 +15,7 @@
     rate: "Слишком много попыток. Попробуйте через 15 минут",
     login_taken: "Такой логин уже занят",
     login: "Логин: латиница, цифры, точка, дефис или @, от 3 символов",
+    folder_taken: "Такая папка уже есть",
     current: "Текущий пароль указан неверно",
     weak: "Новый пароль должен быть не короче 8 символов",
     date: "Проверьте даты",
@@ -944,19 +945,20 @@
 
   // Свёрнутые папки помним в браузере; если хранилище недоступно, все папки просто открыты.
   const FOLDERS_KEY = "cabinet:collapsed-folders";
-  function collapsedFolders() {
+  const PEOPLE_FOLDERS_KEY = "cabinet:collapsed-people-folders";
+  function collapsedFolders(key = FOLDERS_KEY) {
     try {
-      return new Set(JSON.parse(localStorage.getItem(FOLDERS_KEY) || "[]"));
+      return new Set(JSON.parse(localStorage.getItem(key) || "[]"));
     } catch {
       return new Set();
     }
   }
-  function rememberFolder(folder, open) {
-    const set = collapsedFolders();
+  function rememberFolder(folder, open, key = FOLDERS_KEY) {
+    const set = collapsedFolders(key);
     if (open) set.delete(folder);
     else set.add(folder);
     try {
-      localStorage.setItem(FOLDERS_KEY, JSON.stringify([...set]));
+      localStorage.setItem(key, JSON.stringify([...set]));
     } catch {}
   }
 
@@ -1474,8 +1476,10 @@
   /* ---------- Админка: клиенты ---------- */
   async function viewAdminClients(alive) {
     loading();
-    const [{ users }, { projects }] = await Promise.all([api("GET", "/api/admin/users"), api("GET", "/api/projects")]);
+    const [people, { projects }] = await Promise.all([api("GET", "/api/admin/users"), api("GET", "/api/projects")]);
     if (!alive()) return;
+    const { users } = people;
+    let { folders } = people; // папки людей: только для порядка в списке, на доступ не влияют
     const secretBox = h("div");
 
     function showSecret(user, password, isNew) {
@@ -1505,6 +1509,12 @@
     const contact = h("input", { class: "input", maxlength: "120", placeholder: "@username или +7 900 000-00-00" });
     const role = h("select", { class: "select" }, Object.entries(ROLE_LABELS).map(([value, label]) => h("option", { value, text: label })));
     const roleField = h("label", { class: "field" }, h("span", { text: "Роль" }), role);
+    const folderSelect = h("select", { class: "select" });
+    const folderField = h("label", { class: "field" }, h("span", { text: "Папка в списке людей" }), folderSelect);
+    const fillFolders = (value) => {
+      folderSelect.replaceChildren(h("option", { value: "", text: "Без папки" }), ...folders.map((f) => h("option", { value: f, text: f })));
+      folderSelect.value = value;
+    };
 
     // Клиент и менеджер видят только отмеченные проекты; менеджеру ещё можно скрыть блоки.
     const projectBoxes = projects.map((p) => h("input", { type: "checkbox", value: p.id }));
@@ -1568,6 +1578,7 @@
       for (const box of projectBoxes) box.checked = Boolean(user?.projectIds?.includes(box.value));
       for (const f of folderBoxes) f.sync();
       for (const box of hideBoxes) box.checked = Boolean(user?.hide?.includes(box.value));
+      fillFolders(user?.folder || "");
       syncRole();
       form.hidden = false;
       form.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1581,7 +1592,7 @@
         e.preventDefault();
         error.hidden = true;
         create.disabled = true;
-        const fields = { name: name.value, company: company.value, login: login.value, contact: contact.value };
+        const fields = { name: name.value, company: company.value, login: login.value, contact: contact.value, folder: folderSelect.value };
         if (hasProjects()) fields.projectIds = projectBoxes.filter((b) => b.checked).map((b) => b.value);
         if (isManagerForm()) fields.hide = hideBoxes.filter((b) => b.checked).map((b) => b.value);
         try {
@@ -1618,72 +1629,174 @@
     h("div", { class: "grid-2" },
       h("label", { class: "field" }, h("span", { text: "Логин: латиница, цифры, точка или дефис" }), login),
       h("label", { class: "field" }, h("span", { text: "Telegram или телефон" }), contact)),
-    roleField,
+    h("div", { class: "grid-2" }, roleField, folderField),
     projectsField,
     hideField,
     error,
     h("div", { class: "actions" }, create, btn("Отмена", { variant: "light", onclick: () => { form.hidden = true; } })));
 
-    const tbody = h("tbody");
+    // Люди по папкам. Строку можно перетащить мышкой в другую папку; на телефоне папка выбирается в карточке.
+    const listBox = h("div", { class: "people" });
+    const hint = h("p", { class: "muted people-hint", text: "Чтобы разложить людей по папкам, перетащите строку мышкой в нужную папку. На телефоне папка выбирается в карточке человека (✎)." });
+    let dragging = null; // кого тащим
+    const tool = (label, text, onclick, danger = false) => h("button", {
+      class: `icon-btn${danger ? " icon-btn--danger" : ""}`, type: "button", title: label, "aria-label": label, text,
+      onclick: (e) => { e.preventDefault(); onclick(); }, // кнопка в заголовке папки не должна её сворачивать
+    });
+    const applyFolders = (res) => {
+      for (const u of users) Object.assign(u, res.users.find((x) => x.id === u.id));
+      folders = res.folders;
+      renderTable();
+    };
+    const folderAction = async (fn, message) => {
+      try {
+        applyFolders(await fn());
+        toast(message);
+      } catch (err) {
+        toast(errorText(err));
+      }
+    };
+    function createFolder() {
+      const name = prompt("Название папки, например «Empire» или «Подрядчики»");
+      if (name?.trim()) folderAction(() => api("POST", "/api/admin/people-folders", { name }), "Папка создана");
+    }
+    function renameFolder(folder) {
+      const to = prompt("Новое название папки", folder);
+      if (!to?.trim() || to.trim() === folder) return;
+      folderAction(() => api("POST", "/api/admin/people-folders/rename", { from: folder, to }), "Папка переименована");
+    }
+    function deleteFolder(folder, count) {
+      if (!confirm(count ? `Удалить папку «${folder}»? Люди из неё (${count}) останутся, просто без папки.` : `Удалить пустую папку «${folder}»?`)) return;
+      folderAction(() => api("POST", "/api/admin/people-folders/delete", { name: folder }), "Папка удалена");
+    }
+    async function moveTo(u, folder) {
+      try {
+        const { user } = await api("PATCH", `/api/admin/users/${u.id}`, { folder });
+        Object.assign(u, user);
+        renderTable();
+        toast(folder ? `${u.name}: в папке «${folder}»` : `${u.name}: без папки`);
+      } catch (err) {
+        toast(errorText(err));
+      }
+    }
+    const stopDrag = () => {
+      dragging = null;
+      listBox.classList.remove("is-dragging");
+      for (const el of listBox.querySelectorAll(".is-dragging, .is-drop")) el.classList.remove("is-dragging", "is-drop");
+    };
+
+    const peopleTable = (list) => h("div", { class: "card table-wrap" }, h("table", { class: "table" },
+      h("colgroup", {}, h("col"), h("col"), h("col"), h("col", { class: "people__actions" })),
+      h("tbody", {}, list.map(personRow))));
+
+    function folderSection(folder, list) {
+      const section = h("details", {
+        class: "folder people-folder",
+        open: !collapsedFolders(PEOPLE_FOLDERS_KEY).has(folder),
+        ontoggle: (e) => rememberFolder(folder, e.currentTarget.open, PEOPLE_FOLDERS_KEY),
+        ondragover(e) {
+          if (!dragging || dragging.folder === folder) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          section.classList.add("is-drop");
+        },
+        ondragleave(e) {
+          if (!section.contains(e.relatedTarget)) section.classList.remove("is-drop");
+        },
+        ondrop(e) {
+          e.preventDefault();
+          const u = dragging;
+          stopDrag();
+          if (u && u.folder !== folder) moveTo(u, folder);
+        },
+      },
+      h("summary", { class: "folder__head" },
+        h("h2", { class: "folder__title" }, h("span", { class: "folder__icon", "aria-hidden": "true" }), folder || "Без папки"),
+        h("span", { class: "folder__totals mono", text: `${list.length} ${plural(list.length, "человек", "человека", "человек")}` }),
+        folder
+          ? h("span", { class: "row-tools" },
+            tool("Переименовать папку", "✎", () => renameFolder(folder)),
+            tool("Удалить папку", "✕", () => deleteFolder(folder, list.length), true))
+          : null,
+        h("span", { class: "folder__chevron", "aria-hidden": "true" })),
+      list.length ? peopleTable(list) : h("p", { class: "empty people-folder__empty", text: "Пусто. Перетащите сюда человека мышкой." }));
+      return section;
+    }
+
     function renderTable() {
-      tbody.replaceChildren(...users.map((u) => {
-        const self = u.id === me.id;
-        const act = async (fn) => {
-          try {
-            await fn();
-          } catch (err) {
-            toast(errorText(err));
-          }
-        };
-        return h("tr", { class: u.disabled ? "is-off" : null },
-          h("td", {}, h("div", { text: u.name }), u.company ? h("small", { class: "muted", text: u.company }) : null),
-          h("td", {}, h("div", { class: "mono", text: u.login }), u.contact ? h("small", { class: "muted", text: u.contact }) : null),
-          h("td", {},
-            h("div", { text: u.disabled ? "Заблокирован" : ROLE_LABELS[u.role] }),
-            u.projectIds
-              ? h("small", { class: "muted", text: `${u.projectIds.length ? `${u.projectIds.length} ${plural(u.projectIds.length, "проект", "проекта", "проектов")}` : "нет проектов"}${u.hide?.length ? `, скрыто: ${u.hide.map((b) => BLOCK_LABELS[b].toLowerCase()).join(", ")}` : ""}` })
-              : null),
-          h("td", {}, self ? h("span", { class: "mono", text: "это вы" }) : h("div", { class: "actions" },
-            h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить ${u.name}`, text: "✎", onclick: () => openForm(u) }),
-            btn("Новый пароль", {
-              variant: "light", small: true,
-              onclick: () => act(async () => {
-                if (!confirm(`Выдать ${u.name} новый пароль? Старый перестанет работать.`)) return;
-                const { password } = await api("POST", `/api/admin/users/${u.id}/password`);
-                showSecret(u, password, false);
-              }),
+      hint.hidden = !folders.length;
+      // Пока папок нет, список как раньше; без папки — в конце, как у проектов.
+      if (!folders.length) return listBox.replaceChildren(peopleTable(users));
+      const groups = [...folders.map((f) => [f, users.filter((u) => u.folder === f)]), ["", users.filter((u) => !u.folder)]];
+      listBox.replaceChildren(...groups.filter(([f, list]) => f || list.length).map(([f, list]) => folderSection(f, list)));
+    }
+
+    function personRow(u) {
+      const self = u.id === me.id;
+      const act = async (fn) => {
+        try {
+          await fn();
+        } catch (err) {
+          toast(errorText(err));
+        }
+      };
+      return h("tr", {
+        class: u.disabled ? "is-off" : null,
+        draggable: "true",
+        title: "Перетащите в папку",
+        ondragstart(e) {
+          dragging = u;
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", u.name);
+          e.currentTarget.classList.add("is-dragging");
+          listBox.classList.add("is-dragging");
+        },
+        ondragend: stopDrag,
+      },
+        h("td", {}, h("div", { text: u.name }), u.company ? h("small", { class: "muted", text: u.company }) : null),
+        h("td", {}, h("div", { class: "mono", text: u.login }), u.contact ? h("small", { class: "muted", text: u.contact }) : null),
+        h("td", {},
+          h("div", { text: u.disabled ? "Заблокирован" : ROLE_LABELS[u.role] }),
+          u.projectIds
+            ? h("small", { class: "muted", text: `${u.projectIds.length ? `${u.projectIds.length} ${plural(u.projectIds.length, "проект", "проекта", "проектов")}` : "нет проектов"}${u.hide?.length ? `, скрыто: ${u.hide.map((b) => BLOCK_LABELS[b].toLowerCase()).join(", ")}` : ""}` })
+            : null),
+        h("td", {}, self ? h("span", { class: "mono", text: "это вы" }) : h("div", { class: "actions" },
+          h("button", { class: "icon-btn", type: "button", title: "Изменить", "aria-label": `Изменить ${u.name}`, text: "✎", onclick: () => openForm(u) }),
+          btn("Новый пароль", {
+            variant: "light", small: true,
+            onclick: () => act(async () => {
+              if (!confirm(`Выдать ${u.name} новый пароль? Старый перестанет работать.`)) return;
+              const { password } = await api("POST", `/api/admin/users/${u.id}/password`);
+              showSecret(u, password, false);
             }),
-            btn(u.disabled ? "Разблокировать" : "Заблокировать", {
-              variant: "light", small: true,
-              onclick: () => act(async () => {
-                const { user } = await api("PATCH", `/api/admin/users/${u.id}`, { disabled: !u.disabled });
-                Object.assign(u, user);
-                renderTable();
-                toast(user.disabled ? "Доступ закрыт" : "Доступ открыт");
-              }),
+          }),
+          btn(u.disabled ? "Разблокировать" : "Заблокировать", {
+            variant: "light", small: true,
+            onclick: () => act(async () => {
+              const { user } = await api("PATCH", `/api/admin/users/${u.id}`, { disabled: !u.disabled });
+              Object.assign(u, user);
+              renderTable();
+              toast(user.disabled ? "Доступ закрыт" : "Доступ открыт");
             }),
-            h("button", {
-              class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить ${u.name}`, text: "✕",
-              onclick: () => act(async () => {
-                if (!confirm(`Удалить ${u.name}? Доступ ко всем проектам пропадёт.`)) return;
-                await api("DELETE", `/api/admin/users/${u.id}`);
-                users.splice(users.indexOf(u), 1);
-                renderTable();
-                toast("Удалено");
-              }),
-            }))));
-      }));
+          }),
+          h("button", {
+            class: "icon-btn icon-btn--danger", type: "button", title: "Удалить", "aria-label": `Удалить ${u.name}`, text: "✕",
+            onclick: () => act(async () => {
+              if (!confirm(`Удалить ${u.name}? Доступ ко всем проектам пропадёт.`)) return;
+              await api("DELETE", `/api/admin/users/${u.id}`);
+              users.splice(users.indexOf(u), 1);
+              renderTable();
+              toast("Удалено");
+            }),
+          }))));
     }
     renderTable();
 
     root.replaceChildren(...shell(
       h("div", { class: "project-head" },
         h("div", {}, h("span", { class: "eyebrow mono", text: "Админка" }), h("h1", { class: "h1", text: "Люди" })),
-        btn("Добавить", { onclick: () => openForm() })),
-      h("div", { class: "stack mt-32" }, form, secretBox,
-        h("div", { class: "card table-wrap" }, h("table", { class: "table" },
-          h("thead", {}, h("tr", {}, ["Имя", "Логин и контакт", "Роль и доступ", ""].map((t) => h("th", { text: t })))),
-          tbody))),
+        h("div", { class: "actions" }, btn("Новая папка", { variant: "light", onclick: createFolder }), btn("Добавить", { onclick: () => openForm() }))),
+      h("div", { class: "stack mt-32" }, form, secretBox, hint, listBox),
     ));
   }
 
