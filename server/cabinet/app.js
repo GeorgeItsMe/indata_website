@@ -12,6 +12,7 @@ const { hashPassword, checkPassword, generatePassword, createSessions, createLim
 
 const JSON_LIMIT = 256 * 1024;
 const FILE_LIMIT = 25 * 1024 * 1024;
+const LOGO_LIMIT = 1024 * 1024;
 const STATUSES = ["todo", "active", "done"];
 // Блоки проекта, которые можно скрыть от менеджера. Оплаты и суммы менеджер не видит никогда.
 const BLOCKS = ["tasks", "meetings", "updates", "files"];
@@ -19,6 +20,12 @@ const DEFAULT_STAGES = ["Аналитика", "Дизайн", "Разработ�
 // Эти типы браузер может показать сам; остальное отдаём как поток байт, чтобы загруженный
 // HTML или SVG не исполнился на нашем домене.
 const INLINE_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"]);
+// Логотип проекта: только растр, и проверяем по первым байтам, что это действительно картинка.
+const LOGO_TYPES = {
+  "image/png": (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  "image/jpeg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  "image/webp": (b) => b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP",
+};
 const STATIC_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -76,7 +83,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
 
   function projectView(p, user) {
     const view = {
-      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
+      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", logo: p.logo?.id || "", updatedAt: p.updatedAt,
       // Процент можно поставить вручную; иначе он считается по статусам этапов.
       progress: projectProgress(p), progressAuto: progress(p.stages), progressManual: Number.isInteger(p.progressOverride),
       stages: p.stages, payments: p.payments,
@@ -100,7 +107,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const { stages } = p;
     const active = stages.find((s) => s.status === "active");
     return {
-      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", updatedAt: p.updatedAt,
+      id: p.id, title: p.title, summary: p.summary, folder: p.folder || "", logo: p.logo?.id || "", updatedAt: p.updatedAt,
       progress: projectProgress(p),
       ...(hides(user, "payments") ? {} : {
         total: p.payments.reduce((n, x) => n + x.amount, 0),
@@ -188,6 +195,14 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
         "Cache-Control": "private, no-store",
       },
     };
+  });
+
+  // Ссылка на логотип содержит его id (?v=…), поэтому браузер может держать его в кеше.
+  route("GET", "/api/projects/:id/logo", async ({ user, params }) => {
+    const p = findProject(user, params.id);
+    const data = p.logo && store.readFile(p.logo.id);
+    if (!data) fail(404, "not_found");
+    return { raw: data, headers: { "Content-Type": p.logo.type, "Cache-Control": "private, max-age=31536000, immutable" } };
   });
 
   /* ---------- Админка: клиенты ---------- */
@@ -361,6 +376,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   route("DELETE", "/api/admin/projects/:id", async ({ user, params }) => {
     const p = findProject(user, params.id);
     for (const f of p.files) store.deleteFile(f.id);
+    if (p.logo) store.deleteFile(p.logo.id);
     db.projects.splice(db.projects.indexOf(p), 1);
     for (const u of db.users) if (u.projectIds) u.projectIds = u.projectIds.filter((x) => x !== p.id);
     store.save();
@@ -425,7 +441,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return { body: { project: projectView(p, user) } };
   }, "staff");
 
-  // Задачи: что сделать клубу (side "client") и нам (side "team"), по разделам чек-листа (group).
+  // Задачи: что сделать заказчику (side "client") и нам (side "team"), по разделам чек-листа (group).
   // Клиент отмечает только свои пункты, наши видит. Комментировать могут все, кто видит проект.
   const taskFields = (body) => ({
     title: required(str(body.title, 200), "task_title"),
@@ -558,6 +574,31 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const meta = p.files.find((f) => f.id === params.fileId) || fail(404, "not_found");
     store.deleteFile(meta.id);
     p.files = p.files.filter((f) => f !== meta);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "staff");
+
+  route("PUT", "/api/admin/projects/:id/logo", async ({ user, params, req }) => {
+    const p = findEditable(user, params.id, "project");
+    const type = String(req.headers["content-type"] || "").split(";")[0].trim();
+    if (!LOGO_TYPES[type]) fail(400, "logo_type");
+    const data = await readBody(req, LOGO_LIMIT).catch((err) => {
+      throw err.code === "too_large" ? new HttpError(413, "logo_large") : err;
+    });
+    if (!LOGO_TYPES[type](data)) fail(400, "logo_type");
+    if (p.logo) store.deleteFile(p.logo.id);
+    p.logo = { id: store.id(), type, size: data.length };
+    store.writeFile(p.logo.id, data);
+    touch(p);
+    store.save();
+    return { body: { project: projectView(p, user) } };
+  }, "staff", { rawBody: true });
+
+  route("DELETE", "/api/admin/projects/:id/logo", async ({ user, params }) => {
+    const p = findEditable(user, params.id, "project");
+    if (p.logo) store.deleteFile(p.logo.id);
+    delete p.logo;
     touch(p);
     store.save();
     return { body: { project: projectView(p, user) } };

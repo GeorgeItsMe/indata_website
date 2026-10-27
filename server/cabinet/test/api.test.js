@@ -307,6 +307,31 @@ test("доступ клиента к проектам выставляется �
   await admin("DELETE", `/api/admin/projects/${second.id}`);
 });
 
+test("логотип проекта: только картинка, видят те, кому открыт проект", async () => {
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("logo")]);
+  assert.equal((await admin("PUT", `/api/admin/projects/${project.id}/logo`, Buffer.from("<svg/>"), { "content-type": "image/svg+xml" })).status, 400);
+  assert.equal((await admin("PUT", `/api/admin/projects/${project.id}/logo`, Buffer.from("<html>"), { "content-type": "image/png" })).status, 400, "тип проверяем по байтам");
+  const big = await admin("PUT", `/api/admin/projects/${project.id}/logo`, Buffer.concat([png, Buffer.alloc(1024 * 1024)]), { "content-type": "image/png" });
+  assert.equal(big.status, 413);
+  assert.equal(big.json.error, "logo_large");
+
+  const r = await admin("PUT", `/api/admin/projects/${project.id}/logo`, png, { "content-type": "image/png" });
+  assert.equal(r.status, 200);
+  const logo = r.json.project.logo;
+  assert.match(logo, /^[\w-]+$/);
+  assert.equal((await clientA.call("GET", "/api/projects")).json.projects[0].logo, logo, "логотип есть в списке проектов");
+  const img = await clientA.call("GET", `/api/projects/${project.id}/logo`);
+  assert.equal(img.headers.get("content-type"), "image/png");
+  assert.deepEqual(img.raw, png);
+  assert.equal((await clientB.call("GET", `/api/projects/${project.id}/logo`)).status, 404, "чужой клиент не видит");
+  assert.equal((await clientA.call("PUT", `/api/admin/projects/${project.id}/logo`, png, { "content-type": "image/png" })).status, 403);
+
+  const again = await admin("PUT", `/api/admin/projects/${project.id}/logo`, png, { "content-type": "image/png" });
+  assert.notEqual(again.json.project.logo, logo, "новая картинка, новый адрес");
+  assert.equal((await admin("DELETE", `/api/admin/projects/${project.id}/logo`)).json.project.logo, "");
+  assert.equal((await clientA.call("GET", `/api/projects/${project.id}/logo`)).status, 404);
+});
+
 test("заявки на звонок видит только админ", async () => {
   const r = await admin("GET", "/api/admin/bookings");
   assert.equal(r.status, 200);

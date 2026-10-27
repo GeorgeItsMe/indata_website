@@ -21,6 +21,8 @@
     amount: "Проверьте суммы",
     url: "Ссылка должна начинаться с http:// или https://",
     too_large: "Файл больше 25 МБ",
+    logo_type: "Логотип: PNG, JPEG или WebP",
+    logo_large: "Логотип больше 1 МБ",
     self: "Это действие нельзя применить к себе",
   };
 
@@ -354,8 +356,12 @@
       tasks ? [" · ", h("span", { class: "accent nowrap", text: `${me.role === "client" ? "нужно от вас" : "у заказчика"}: ${tasks} ${plural(tasks, "задача", "задачи", "задач")}` })] : null);
   }
 
+  // В адресе id логотипа: новая картинка получает новый адрес, старая может жить в кеше.
+  const logoSrc = (p) => `/api/projects/${p.id}/logo?v=${p.logo}`;
+
   function projectCard(p, href = `/p/${p.id}`) {
     return link(href, { class: "card project-card" },
+      p.logo ? h("img", { class: "project-card__logo", src: logoSrc(p), alt: "" }) : null,
       h("h2", { class: "project-card__title", text: p.title }),
       p.summary ? h("p", { class: "project-card__summary", text: p.summary }) : null,
       p.clients ? h("p", { class: "mono", text: p.clients.join(", ") || "Клиенты не назначены" }) : null,
@@ -452,13 +458,14 @@
     };
 
     function draw() {
-      // «Нужно от вас» — только пункты клуба, наши пункты в счёт не идут.
+      // «Нужно от вас» — только пункты заказчика, наши пункты в счёт не идут.
       const open = (p.tasks || []).filter((t) => !t.done && t.side !== "team");
       const checklist = (p.tasks || []).some((t) => t.group);
       const base = `/p/${p.id}`;
       const head = h("div", { class: "project-head" },
         h("div", {},
           back,
+          p.logo ? h("img", { class: "project-logo", src: logoSrc(p), alt: "" }) : null,
           admin || !back ? h("span", { class: "eyebrow mono", text: admin ? "Так проект видит клиент" : "Проект" }) : null,
           h("h1", { class: "h1", text: p.title }),
           p.summary ? h("p", { class: "lead", text: p.summary }) : null),
@@ -515,7 +522,7 @@
     ];
   }
 
-  // Чек-лист: разделы по порядку создания, в каждом «От клуба» и «От нас», у пунктов комментарии.
+  // Чек-лист: разделы по порядку создания, в каждом «От вас» и «От нас», у пунктов комментарии.
   // Админ и менеджер правят его прямо здесь: пункты, разделы, добавление.
   function checklistView(p, act) {
     const tasks = [...p.tasks].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
@@ -545,7 +552,7 @@
       const text = h("textarea", { class: "textarea textarea--short", maxlength: "2000", placeholder: "Пояснение, если нужно" });
       text.value = t ? t.text : "";
       const due = h("input", { class: "input input--sm", type: "date", value: t ? t.due : defaults.due || "" });
-      const side = h("select", { class: "select select--sm" }, h("option", { value: "client", text: "От клуба" }), h("option", { value: "team", text: "От нас" }));
+      const side = h("select", { class: "select select--sm" }, h("option", { value: "client", text: "От вас" }), h("option", { value: "team", text: "От нас" }));
       side.value = t ? t.side || "client" : defaults.side;
       const group = h("input", { class: "input input--sm", maxlength: "120", list: listId, value: t ? t.group || "" : defaults.group, placeholder: "Раздел" });
       const save = btn(t ? "Сохранить" : "Добавить", { type: "submit", small: true });
@@ -671,14 +678,14 @@
 
     return h("section", { class: "checklist" },
       h("datalist", { id: listId }, names.map((g) => h("option", { value: g }))),
-      h("p", { class: "lead tasks-lead", text: "Что нужно от клуба и что делаем мы. Отмечайте выполненное и пишите комментарии к любому пункту: мы видим сразу." }),
+      h("p", { class: "lead tasks-lead", text: "Что нужно от вас и что делаем мы. Отмечайте выполненное и пишите комментарии к любому пункту: мы видим сразу." }),
       h("div", { class: "checklist__stats" },
-        h("div", {}, h("span", { text: "От клуба" }), h("b", { text: `${doneOf(theirs)} из ${theirs.length}` })),
+        h("div", {}, h("span", { text: "От вас" }), h("b", { text: `${doneOf(theirs)} из ${theirs.length}` })),
         h("div", {}, h("span", { text: "От нас" }), h("b", { text: `${doneOf(ours)} из ${ours.length}` }))),
       [...groups].map(([group, list], i) => h("article", { class: "cl-group" },
         groupHead(group, list, i),
         h("div", { class: "cl-group__cols" },
-          column(group, "client", "От клуба", list.filter((t) => t.side !== "team")),
+          column(group, "client", "От вас", list.filter((t) => t.side !== "team")),
           column(group, "team", "От нас", list.filter((t) => t.side === "team"))))),
       act.staff ? newGroup() : null);
   }
@@ -707,7 +714,7 @@
           h("p", { class: "task__title", text: t.title }),
           t.text ? h("p", { class: "task__text", text: t.text }) : null,
           h("div", { class: "task__meta" },
-            t.group ? h("span", { class: "mono", text: `${t.group} · ${t.side === "team" ? "наш пункт" : "пункт клуба"}` }) : null,
+            t.group ? h("span", { class: "mono", text: `${t.group} · ${t.side === "team" ? "наш пункт" : "пункт заказчика"}` }) : null,
             t.done
               ? h("span", { class: "tag tag--ok", text: `Выполнено ${fmtDate(t.doneAt.slice(0, 10))}${t.doneBy ? ` · ${t.doneBy}` : ""}` })
               : t.due ? h("span", { class: `tag ${overdue ? "tag--due" : "muted"}`, text: `${overdue ? "Срок был" : "Сделать до"} ${fmtDate(t.due)}` }) : null,
@@ -1096,7 +1103,7 @@
     const taskGroup = h("input", { class: "input", maxlength: "120", list: groupsListId, placeholder: "Например, Вход по SMS" });
     const taskGroups = () => h("datalist", { id: groupsListId }, [...new Set(p.tasks.map((t) => t.group).filter(Boolean))].map((g) => h("option", { value: g })));
     const groupsBox = h("span", {}, taskGroups());
-    const taskSide = h("select", { class: "select" }, h("option", { value: "client", text: "Пункт клуба" }), h("option", { value: "team", text: "Наш пункт" }));
+    const taskSide = h("select", { class: "select" }, h("option", { value: "client", text: "Пункт заказчика" }), h("option", { value: "team", text: "Наш пункт" }));
     const taskError = h("p", { class: "form__error", hidden: true });
     const taskBtn = btn("Добавить задачу", { type: "submit" });
     const taskCancel = btn("Отмена", { variant: "light", hidden: true, onclick: () => resetTaskForm() });
@@ -1332,6 +1339,47 @@
       }
     });
 
+    // Логотип загружается сразу, как документы; виден на карточке и в шапке проекта.
+    const logoBox = h("div", { class: "logo-field" });
+    const logoInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: true });
+    const logoBtn = btn("Загрузить", { variant: "light", small: true, onclick: () => logoInput.click() });
+    const renderLogo = () => logoBox.replaceChildren(
+      p.logo ? h("img", { class: "project-logo", src: logoSrc(p), alt: "Логотип проекта" }) : null,
+      h("div", { class: "actions" },
+        logoBtn,
+        p.logo
+          ? btn("Убрать", {
+            variant: "light",
+            small: true,
+            async onclick() {
+              try {
+                p = (await api("DELETE", `/api/admin/projects/${p.id}/logo`)).project;
+                renderLogo();
+                toast("Логотип убран");
+              } catch (err) {
+                toast(errorText(err));
+              }
+            },
+          })
+          : null),
+      h("small", { class: "muted", text: "PNG, JPEG или WebP до 1 МБ, лучше квадратный знак" }));
+    logoInput.addEventListener("change", async () => {
+      const [file] = logoInput.files;
+      if (!file) return;
+      logoBtn.disabled = true;
+      try {
+        p = (await api("PUT", `/api/admin/projects/${p.id}/logo`, file)).project;
+        toast("Логотип загружен");
+      } catch (err) {
+        toast(errorText(err));
+      } finally {
+        logoInput.value = "";
+        logoBtn.disabled = false;
+        renderLogo();
+      }
+    });
+    renderLogo();
+
     const removeBtn = btn("Удалить проект", {
       variant: "danger",
       small: true,
@@ -1359,6 +1407,7 @@
             h("label", { class: "field" }, h("span", { text: "Название" }), titleInput),
             isAdmin ? h("label", { class: "field" }, h("span", { text: "Папка: клиент или компания" }), folderInput.input, folderInput.list) : null),
           h("label", { class: "field" }, h("span", { text: "Описание" }), summaryInput),
+          h("div", { class: "field" }, h("span", { text: "Логотип" }), logoBox, logoInput),
           isAdmin
             ? h("div", { class: "field" }, h("span", { text: "Кому открыт проект" }), picks.el)
             : p.clients?.length ? h("p", { class: "mono", text: `Клиент: ${p.clients.map((c) => c.name).join(", ")}` }) : null),
