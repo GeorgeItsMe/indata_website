@@ -36,7 +36,16 @@
     parent: "Так переместить страницу нельзя",
     place: "Не получилось поставить задачу на это место",
     forbidden: "Недостаточно прав",
+    link: "Так связать задачи нельзя",
+    link_exists: "Такая связь уже есть",
+    wip: "Лимит колонки: число от 1 до 99",
+    timer: "Таймер: до 60 минут",
   });
+  const LINK_LABELS = {
+    blocks: ["блокирует", "заблокирована задачей"],
+    relates: ["связана с", "связана с"],
+    duplicates: ["дублирует", "дубликат у"],
+  };
 
   /* ---------- Мелочи ---------- */
   const NS = "http://www.w3.org/2000/svg";
@@ -61,6 +70,8 @@
     grip: "M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01",
     board: "M2.5 3.5h11v9h-11zM6 3.5v9M10 3.5v9",
     page: "M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12",
+    block: "M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM3.8 3.8l8.4 8.4",
+    links: "M6 5.5H4.5a2.5 2.5 0 0 0 0 5H6M10 5.5h1.5a2.5 2.5 0 0 1 0 5H10M5.5 8h5",
   };
   const ico = (name, cls = "ico") => svg("svg", { viewBox: "0 0 16 16", class: cls, "aria-hidden": "true" }, svg("path", { d: ICONS[name] }));
 
@@ -155,6 +166,52 @@
     }
   }
 
+  // Подсказка логинов после «@» в поле текста: стрелки, Enter или Tab выбирают человека.
+  function mentionAssist(area, people) {
+    const wrap = h("div", { class: "mention-wrap" });
+    const menu = h("div", { class: "mention-menu", hidden: true, role: "listbox" });
+    let list = [];
+    let cursor = 0;
+    const token = () => /(^|[\s(])@([a-z0-9._-]*)$/i.exec(area.value.slice(0, area.selectionStart));
+    function paint() {
+      menu.replaceChildren(...list.map((u, k) => h("button", {
+        class: `mention-menu__row${k === cursor ? " is-active" : ""}`, type: "button", role: "option",
+        onmousedown: (e) => { e.preventDefault(); pick(u); },
+      }, avatar(u.id, { size: 22 }), h("span", { text: u.name }), h("span", { class: "mono", text: `@${u.login}` }))));
+      menu.hidden = !list.length;
+    }
+    function update() {
+      const m = token();
+      if (!m) { list = []; paint(); return; }
+      const q = m[2].toLowerCase();
+      list = people().filter((u) => u.login.toLowerCase().startsWith(q) || u.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(q))).slice(0, 6);
+      cursor = 0;
+      paint();
+    }
+    function pick(u) {
+      const m = token();
+      if (!m) return;
+      const end = area.selectionStart;
+      const start = end - m[2].length - 1;
+      area.value = `${area.value.slice(0, start)}@${u.login} ${area.value.slice(end)}`;
+      area.selectionStart = area.selectionEnd = start + u.login.length + 2;
+      list = [];
+      paint();
+      area.dispatchEvent(new Event("input"));
+      area.focus();
+    }
+    area.addEventListener("input", update);
+    area.addEventListener("keydown", (e) => {
+      if (menu.hidden) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); cursor = (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length; paint(); }
+      else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopImmediatePropagation(); pick(list[cursor]); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); list = []; paint(); }
+    }, true);
+    area.addEventListener("blur", () => setTimeout(() => { list = []; paint(); }, 150));
+    wrap.append(area, menu);
+    return wrap;
+  }
+
   /* ---------- Markdown ----------
      Описания задач, комментарии и вики. Только безопасный набор: заголовки, списки, чек-боксы, цитаты, код,
      таблицы, ссылки http(s) и внутренние, картинки только со своего сервера. Узлы строятся через DOM. */
@@ -167,7 +224,8 @@
     "(\\*[^*\\s][^*\\n]*\\*|\\b_[^_\\s][^_\\n]*_\\b)",
     "(https?:\\/\\/[^\\s<>()]+[^\\s<>().,;:!?'\"»])",
     "(\\b[A-Z][A-Z0-9]{1,9}-\\d+\\b)",
-  ].join("|"), "g");
+    "((?<![\\w.@])@[a-z0-9][a-z0-9._-]{2,63})",
+  ].join("|"), "gi");
   function safeLink(url, children) {
     if (/^\/(?!\/)/.test(url)) return link(url, { class: "md-link" }, ...children);
     if (/^https?:\/\//i.test(url)) return h("a", { class: "md-link", href: url, target: "_blank", rel: "noopener noreferrer" }, ...children);
@@ -178,7 +236,7 @@
     let last = 0;
     for (const m of text.matchAll(INLINE)) {
       if (m.index > last) out.push(text.slice(last, m.index));
-      const [all, code, image, mdLink, bold, strike, italic, url, key] = m;
+      const [all, code, image, mdLink, bold, strike, italic, url, key, mention] = m;
       if (code) out.push(h("code", { text: code.slice(1, -1) }));
       else if (image) {
         const [, alt, src] = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(image);
@@ -190,7 +248,12 @@
       else if (strike) out.push(h("s", {}, ...inline(strike.slice(2, -2))));
       else if (italic) out.push(h("em", {}, ...inline(italic.slice(1, -1))));
       else if (url) out.push(safeLink(url, [url.replace(/^https?:\/\//, "").slice(0, 60)]));
-      else if (key) out.push(knownKeys.has(key.split("-")[0]) ? link(`/work/i/${key}`, { class: "md-key" }, key) : key);
+      else if (key) out.push(knownKeys.has(key.split("-")[0]) && key === key.toUpperCase() ? link(`/work/i/${key}`, { class: "md-key" }, key) : key);
+      else if (mention) {
+        const login = mention.slice(1).toLowerCase();
+        const u = [...team.values()].find((x) => x.login === login);
+        out.push(u ? h("span", { class: `mention${u.id === me()?.id ? " is-me" : ""}`, title: u.name, text: mention }) : mention);
+      }
       else out.push(all);
       last = m.index + all.length;
     }
@@ -432,6 +495,7 @@
     const brief = { ...issue };
     for (const key of ["description", "checklist", "worklogs", "history", "project"]) delete brief[key];
     brief.comments = Array.isArray(issue.comments) ? issue.comments.length : issue.comments;
+    brief.links = Array.isArray(issue.links) ? issue.links.length : issue.links;
     brief.files = Array.isArray(issue.files) ? issue.files.length : issue.files;
     if (k >= 0) data.issues[k] = brief;
     else data.issues.push(brief);
@@ -470,6 +534,7 @@
 
   function spaceSettings(data) {
     const key = h("input", { class: "input", value: data.project.key, maxlength: "10", required: true, autocapitalize: "characters", spellcheck: "false" });
+    const wip = STATUSES.filter(([s]) => s !== "done").map(([s, label]) => [s, label, h("input", { class: "input input--sm", type: "number", min: "0", max: "99", step: "1", placeholder: "нет", value: data.project.wip[s] || "" })]);
     const error = h("p", { class: "form__error", hidden: true });
     const save = btn("Сохранить", { type: "submit" });
     const ui = dialog("Настройки проекта", h("form", {
@@ -478,10 +543,12 @@
         e.preventDefault();
         save.disabled = true;
         try {
-          const res = await api("PATCH", `/api/work/projects/${data.project.id}`, { key: key.value });
+          const body = { wip: Object.fromEntries(wip.map(([s, , input]) => [s, Number(input.value || 0)])) };
+          if (key.value.trim().toUpperCase() !== data.project.key) body.key = key.value;
+          const res = await api("PATCH", `/api/work/projects/${data.project.id}`, body);
           knownKeys.add(res.project.key);
           ui.close(true);
-          toast("Ключ изменён: номера задач теперь с ним");
+          toast(body.key ? "Ключ изменён: номера задач теперь с ним" : "Настройки сохранены");
           navigate(location.pathname, { replace: true });
         } catch (err) {
           error.textContent = errorText(err);
@@ -491,6 +558,9 @@
       },
     },
     h("label", { class: "field" }, h("span", { text: "Ключ задач, как в Jira: D2OP-12. Старые ссылки с прежним ключом перестанут открываться" }), key),
+    h("div", { class: "field" },
+      h("span", { text: "WIP-лимиты: сколько задач может одновременно стоять в колонке. Превышение подсвечивается на доске" }),
+      h("div", { class: "wip-grid" }, wip.map(([, label, input]) => h("label", { class: "field" }, h("span", { text: label }), input)))),
     error,
     h("div", { class: "actions" }, save)));
     key.focus();
@@ -566,18 +636,20 @@
 
   /* ---------- Карточка задачи ---------- */
   let openPanel = null; // открытая карточка: живые обновления её освежают
-  function openIssue(issueId, { space = null, onChange = () => {} } = {}) {
-    const panel = issuePanel(issueId, { space, onChange, onClose: () => ui.close() });
+  // onLinks — связи поменялись: у второй задачи тоже меняется «заблокирована», экрану стоит перечитать данные.
+  function openIssue(issueId, { space = null, onChange = () => {}, onLinks = () => {} } = {}) {
+    const panel = issuePanel(issueId, { space, onChange, onLinks, onClose: () => ui.close() });
     const ui = overlay(panel.el, { kind: "sheet", canClose: panel.canClose, onClose: () => { if (openPanel === panel) openPanel = null; } });
     openPanel = panel;
     return panel;
   }
 
-  function issuePanel(issueId, { space = null, onChange = () => {}, onClose = null, page = false } = {}) {
+  function issuePanel(issueId, { space = null, onChange = () => {}, onLinks = () => {}, onClose = null, page = false } = {}) {
     const el = h("div", { class: `issue${page ? " issue--page" : ""}` }, h("p", { class: "loading mono", text: "Загружаем задачу…" }));
     let issue = null;
     let data = space;
-    const ui = { tab: "comments", editDesc: false, desc: "", comment: "", editComment: null, commentEdit: "", logHours: "", logNote: "", logDate: today() };
+    const ui = { tab: "comments", editDesc: false, desc: "", comment: "", editComment: null, commentEdit: "", logHours: "", logNote: "", logDate: today(), linkType: "blocks", linkOpen: false, linkQuery: "" };
+    const people = () => data.members.map((id) => team.get(id)).filter(Boolean);
 
     async function load() {
       try {
@@ -622,7 +694,7 @@
       const top = scroller.scrollTop;
       // Название над колонками: на телефоне поля (статус, исполнитель) встают сразу под ним.
       el.replaceChildren(head(), titleField(), h("div", { class: "issue__grid" },
-        h("div", { class: "issue__main" }, descBlock(), issue.type === "epic" ? epicBlock() : null, checklistBlock(), filesBlock(), activityBlock()),
+        h("div", { class: "issue__main" }, issue.blocked ? blockedNote() : null, descBlock(), issue.type === "epic" ? epicBlock() : null, checklistBlock(), linksBlock(), filesBlock(), activityBlock()),
         h("aside", { class: "issue__side" }, fieldsBlock())));
       scroller.scrollTop = top;
     }
@@ -683,6 +755,7 @@
           if (e.key === "Escape") { e.stopPropagation(); cancel(); }
         });
         pasteImages(area, () => `/api/work/issues/${issue.id}/files`, (res) => { issue = res.issue; mergeIssue(data, res.issue); });
+        const areaBox = mentionAssist(area, people);
         const submit = async () => {
           if (await save({ description: ui.desc }, "Описание сохранено")) { ui.editDesc = false; draw(); }
         };
@@ -694,7 +767,7 @@
         setTimeout(() => area.focus());
         return h("section", { class: "issue__block" },
           h("h3", { class: "issue__label", text: "Описание" }),
-          area,
+          areaBox,
           h("p", { class: "md-hint mono", text: "Markdown: **жирный**, # заголовок, - список, - [ ] чек-бокс, ```код```. Картинку можно вставить из буфера. Ctrl+Enter сохраняет" }),
           h("div", { class: "actions" }, btn("Сохранить", { small: true, onclick: submit }), btn("Отмена", { small: true, variant: "light", onclick: cancel })));
       }
@@ -706,6 +779,80 @@
         issue.description
           ? h("div", { class: "issue__desc", ondblclick: startEdit }, markdown(issue.description, { onToggle: (line, checked) => save({ description: toggleTask(issue.description, line, checked) }) }))
           : h("button", { class: "issue__placeholder", type: "button", text: "Добавить описание…", onclick: startEdit }));
+    }
+
+    function blockedNote() {
+      const by = issue.links.filter((l) => l.type === "blocks" && l.direction === "in" && l.issue.status !== "done");
+      return h("p", { class: "issue__blocked" }, ico("block"), "Заблокирована: ",
+        by.map((l, k) => [k ? ", " : "", h("button", { class: "link-btn", type: "button", text: `${l.issue.key} ${l.issue.title}`, onclick: () => panelSwap(l.issue.id) })]));
+    }
+
+    // Связи, как в Jira: что блокирует эту задачу, что блокирует она, связанные и дубликаты.
+    function linksBlock() {
+      const groups = new Map();
+      for (const l of issue.links) {
+        const label = LINK_LABELS[l.type][l.direction === "out" ? 0 : 1];
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(l);
+      }
+      const remove = async (l) => {
+        try {
+          await api("DELETE", `/api/work/issues/${l.ownerId}/links/${l.id}`);
+          await load();
+          onChange(issue);
+          onLinks();
+          toast("Связь удалена");
+        } catch (err) {
+          toast(errorText(err));
+        }
+      };
+      let form = null;
+      if (ui.linkOpen) {
+        const input = h("input", { class: "input input--sm", placeholder: "Ключ или название задачи этого проекта", value: ui.linkQuery });
+        const results = h("div", { class: "link-results" });
+        const find = () => {
+          const q = input.value.trim().toLowerCase();
+          const linked = new Set(issue.links.map((l) => l.issue.id));
+          const hits = q ? data.issues.filter((x) => x.id !== issue.id && !linked.has(x.id) && (x.key.toLowerCase().includes(q) || x.title.toLowerCase().includes(q))).slice(0, 6) : [];
+          results.replaceChildren(...hits.map((x) => h("button", { class: "search-row", type: "button", onclick: () => add(x) },
+            typeIcon(x.type), h("span", { class: "mono", text: x.key }), h("span", { class: "search-row__title", text: x.title }), statusPill(x.status))));
+        };
+        const add = async (x) => {
+          // «Заблокирована задачей X» хранится у X как «X блокирует эту».
+          const [owner, target, type] = ui.linkType === "blocked" ? [x.id, issue.id, "blocks"] : [issue.id, x.id, ui.linkType];
+          try {
+            await api("POST", `/api/work/issues/${owner}/links`, { type, issueId: target });
+            Object.assign(ui, { linkOpen: false, linkQuery: "" });
+            await load();
+            onChange(issue);
+            onLinks();
+            toast("Связь добавлена");
+          } catch (err) {
+            toast(errorText(err));
+          }
+        };
+        input.addEventListener("input", () => { ui.linkQuery = input.value; find(); });
+        input.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); ui.linkOpen = false; draw(); } });
+        setTimeout(() => { input.focus(); find(); });
+        form = h("div", { class: "link-form-issue" },
+          h("div", { class: "link-form-issue__row" },
+            select("", [["blocks", "блокирует"], ["blocked", "заблокирована задачей"], ["relates", "связана с"], ["duplicates", "дублирует"]], ui.linkType, (v) => { ui.linkType = v; }),
+            input,
+            btn("Отмена", { small: true, variant: "light", onclick: () => { ui.linkOpen = false; draw(); } })),
+          results);
+      }
+      return h("section", { class: "issue__block" },
+        h("div", { class: "issue__block-head" },
+          h("h3", { class: "issue__label", text: "Связи" }),
+          ui.linkOpen ? null : h("button", { class: "link-btn issue__edit", type: "button", text: "Связать", onclick: () => { ui.linkOpen = true; draw(); } })),
+        [...groups].map(([label, list]) => h("div", { class: "links-group" },
+          h("p", { class: "links-group__title", text: label }),
+          h("ul", { class: "mini-issues" }, list.map((l) => h("li", { class: "link-row" },
+            h("button", { class: `mini-issue${l.issue.status === "done" ? " is-done" : ""}`, type: "button", onclick: () => panelSwap(l.issue.id) },
+              typeIcon(l.issue.type), h("span", { class: "mini-issue__key mono", text: l.issue.key }), h("span", { class: "mini-issue__title", text: l.issue.title }), statusPill(l.issue.status)),
+            tool("Убрать связь", "close", () => remove(l), true)))))),
+        form,
+        !issue.links.length && !form ? h("p", { class: "empty empty--small", text: "Нет связей. «Связать», чтобы отметить, что задача блокирует другую или дублирует её." }) : null);
     }
 
     function epicBlock() {
@@ -805,7 +952,7 @@
     }
 
     function commentsBlock() {
-      const area = h("textarea", { class: "textarea textarea--short", maxlength: "5000", placeholder: "Комментарий. Ctrl+Enter отправляет" });
+      const area = h("textarea", { class: "textarea textarea--short", maxlength: "5000", placeholder: "Комментарий. @логин позовёт коллегу, Ctrl+Enter отправляет" });
       area.value = ui.comment;
       area.addEventListener("input", () => { ui.comment = area.value; });
       const send = btn("Отправить", { small: true, type: "submit" });
@@ -818,7 +965,7 @@
       area.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); } });
       const list = [...issue.comments].reverse();
       return h("div", { class: "comments" },
-        h("form", { class: "comments__form", onsubmit: (e) => { e.preventDefault(); submit(); } }, avatar(me().id, { size: 30 }), h("div", { class: "comments__input" }, area, h("div", { class: "actions" }, send))),
+        h("form", { class: "comments__form", onsubmit: (e) => { e.preventDefault(); submit(); } }, avatar(me().id, { size: 30 }), h("div", { class: "comments__input" }, mentionAssist(area, people), h("div", { class: "actions" }, send))),
         list.map((c) => {
           const own = c.authorId === me().id;
           if (ui.editComment === c.id) {
@@ -1158,12 +1305,13 @@
     const maxDay = Math.max(8, ...perDay);
     const DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
-    const feedItem = (x) => h("li", { class: "feed-item" },
+    const fresh = data.feed.filter((x) => x.at > data.seenAt).length;
+    const feedItem = (x) => h("li", { class: `feed-item${x.at > data.seenAt ? " is-new" : ""}` },
       h("p", { class: "feed-item__what" },
         h("b", { text: x.by }), " ",
-        x.kind === "comment" ? "· комментарий" : x.kind === "created" ? "· новая задача для вас" : ["· ", describeChange(null, x)]),
+        x.kind === "comment" ? "· комментарий" : x.kind === "mention" ? h("span", { class: "accent", text: "· упоминание" }) : x.kind === "created" ? "· новая задача для вас" : ["· ", describeChange(null, x)]),
       h("button", { class: "feed-item__issue", type: "button", onclick: () => openIssue(x.issue.id) }, typeIcon(x.issue.type), h("span", { class: "mono", text: x.issue.key }), h("span", { text: x.issue.title })),
-      x.kind === "comment" ? h("p", { class: "feed-item__quote", text: x.text }) : null,
+      x.kind === "comment" || x.kind === "mention" ? h("p", { class: "feed-item__quote", text: x.text }) : null,
       h("span", { class: "mono", text: ago(x.at) }));
 
     const spaceCard = (p) => link(`/work/p/${p.id}/board`, { class: "card space-card" },
@@ -1211,7 +1359,7 @@
                 h("span", { class: "mono", text: DAYS[k] })))),
               h("p", { class: "muted week__hint", text: "Время пишется в карточке задачи, во вкладке «Время»." })),
             h("section", {},
-              h("div", { class: "section-head" }, h("h2", { class: "h3", text: "Что изменилось" }), h("span", { class: "mono", text: "2 недели" })),
+              h("div", { class: "section-head" }, h("h2", { class: "h3", text: "Что изменилось" }), h("span", { class: `mono${fresh ? " accent" : ""}`, text: fresh ? `новое: ${fresh}` : "2 недели" })),
               data.feed.length ? h("ul", { class: "feed-list" }, data.feed.slice(0, 20).map(feedItem)) : h("p", { class: "empty empty--small", text: "По вашим задачам тихо: здесь появятся комментарии и изменения от коллег." })),
             data.recent.length
               ? h("section", {},
@@ -1228,7 +1376,22 @@
       widen(nodes);
       return nodes;
     })());
+    // Ленту посмотрели: счётчик на вкладке «Работа» обнуляется, новые записи подсвечены до следующего захода.
+    if (fresh) api("POST", "/api/work/seen").then(() => I.setNavBadge("/work", 0)).catch(() => {});
+    else I.setNavBadge("/work", 0);
   }
+
+  // Раз в минуту спрашиваем, есть ли новое по моим задачам, и рисуем число на вкладке «Работа».
+  async function pollUnread() {
+    const user = me();
+    if (!user || !I.TEAM_ROLES.includes(user.role) || document.hidden || location.pathname === "/work") return;
+    try {
+      I.setNavBadge("/work", (await api("GET", "/api/work/unread")).count);
+    } catch {}
+  }
+  setTimeout(pollUnread, 1500);
+  setInterval(pollUnread, 60000);
+  document.addEventListener("visibilitychange", pollUnread);
 
   /* ---------- Доска (канбан) ---------- */
   async function viewBoard(alive, id) {
@@ -1289,8 +1452,8 @@
     function card(i) {
       const el = h("article", {
         class: `kcard${i.status === "done" ? " is-done" : ""}`, draggable: "true", tabindex: "0", "data-id": i.id,
-        onclick: () => openIssue(i.id, { space: data, onChange }),
-        onkeydown: (e) => { if (e.key === "Enter") openIssue(i.id, { space: data, onChange }); },
+        onclick: () => openIssue(i.id, { space: data, onChange, onLinks: reload }),
+        onkeydown: (e) => { if (e.key === "Enter") openIssue(i.id, { space: data, onChange, onLinks: reload }); },
         ondragstart: (e) => {
           dragging = i;
           e.dataTransfer.effectAllowed = "move";
@@ -1313,6 +1476,7 @@
         h("span", { class: "kcard__key mono", text: i.key }),
         priorityIcon(i.priority),
         i.due ? h("span", { class: `kcard__due mono${isOverdue(i) ? " is-late" : ""}`, title: "Срок", text: fmtDate(i.due) }) : null,
+        i.blocked ? h("span", { class: "kcard__blocked", title: "Заблокирована другой задачей" }, ico("block")) : null,
         i.checks.total ? h("span", { class: `kcard__meta mono${i.checks.done === i.checks.total ? " is-ok" : ""}`, title: "Чек-лист" }, ico("check"), `${i.checks.done}/${i.checks.total}`) : null,
         i.comments ? h("span", { class: "kcard__meta mono", title: "Комментарии" }, ico("comment"), String(i.comments)) : null,
         i.estimate ? h("span", { class: "kcard__est mono", title: `Оценка ${hrs(i.estimate)}${i.spent ? `, затрачено ${hrs(i.spent)}` : ""}`, text: `${String(i.estimate).replace(".", ",")}ч` }) : null,
@@ -1441,11 +1605,19 @@
       keepSearchFocus(() => {
         const list = applyFilters(scope(), f);
         const lanes = lanesOf(list);
+        const all = scope();
         const columns = STATUSES.map(([s, title]) => {
           const inCol = list.filter((i) => i.status === s);
           const est = inCol.reduce((n, i) => n + (i.estimate || 0), 0);
-          return h("div", { class: `kcol is-${s}`, "data-status": s },
-            h("div", { class: "kcol__head" }, h("span", { class: `kcol__dot is-${s}` }), h("b", { text: title }), h("span", { class: "mono", text: String(inCol.length) }), est ? h("span", { class: "mono kcol__est", text: hrs(est) }) : null),
+          const limit = data.project.wip[s];
+          const total = all.filter((i) => i.status === s).length;
+          const over = limit && total > limit;
+          return h("div", { class: `kcol is-${s}${over ? " is-over" : ""}`, "data-status": s },
+            h("div", { class: "kcol__head", title: limit ? `WIP-лимит колонки: ${limit}` : null },
+              h("span", { class: `kcol__dot is-${s}` }), h("b", { text: title }),
+              h("span", { class: "mono kcol__count", text: limit ? `${inCol.length}/${limit}` : String(inCol.length) }),
+              over ? h("span", { class: "kcol__over mono", text: "лимит" }) : null,
+              est ? h("span", { class: "mono kcol__est", text: hrs(est) }) : null),
             lanes ? null : cell(s, inCol, null));
         });
         let body;
@@ -1458,7 +1630,7 @@
         } else {
           body = h("div", { class: "kboard" }, h("div", { class: "kboard__cols" }, columns));
         }
-        const total = scope().length;
+        const total = all.length;
         I.root.replaceChildren(...spaceShell(data, "board", { onCreated: (issue) => { mergeIssue(data, issue); draw(); } },
           sprintBar(),
           filterBar(data, f, (o) => draw(o), { lanes: true }),
@@ -1517,8 +1689,8 @@
     function row(i) {
       const el = h("li", {
         class: `brow${i.status === "done" ? " is-done" : ""}`, draggable: "true", "data-id": i.id, tabindex: "0",
-        onclick: () => openIssue(i.id, { space: data, onChange }),
-        onkeydown: (e) => { if (e.key === "Enter") openIssue(i.id, { space: data, onChange }); },
+        onclick: () => openIssue(i.id, { space: data, onChange, onLinks: reload }),
+        onkeydown: (e) => { if (e.key === "Enter") openIssue(i.id, { space: data, onChange, onLinks: reload }); },
         ondragstart: (e) => {
           dragging = i;
           e.dataTransfer.effectAllowed = "move";
@@ -1536,6 +1708,7 @@
       typeIcon(i.type),
       h("span", { class: "brow__key mono", text: i.key }),
       h("span", { class: "brow__title", text: i.title }),
+      i.blocked ? h("span", { class: "kcard__blocked", title: "Заблокирована другой задачей" }, ico("block")) : null,
       h("span", { class: "brow__tags" }, epicChip(data, i.epicId), i.labels.slice(0, 2).map((l) => h("span", { class: "label-chip label-chip--sm", text: l }))),
       priorityIcon(i.priority),
       statusPill(i.status),
@@ -1817,7 +1990,7 @@
               h("thead", {}, h("tr", {}, COLUMNS.map(th))),
               h("tbody", {}, list.map((i) => h("tr", { class: i.status === "done" ? "is-off" : null, tabindex: "0", onclick: () => openIssue(i.id, { space: data, onChange }), onkeydown: (e) => { if (e.key === "Enter") openIssue(i.id, { space: data, onChange }); } },
                 h("td", { class: "nowrap" }, h("span", { class: "cell-key" }, typeIcon(i.type), h("span", { class: "mono", text: i.key }))),
-                h("td", { class: "cell-title" }, i.title, epicChip(data, i.epicId)),
+                h("td", { class: "cell-title" }, i.blocked ? h("span", { class: "kcard__blocked", title: "Заблокирована другой задачей" }, ico("block")) : null, i.title, epicChip(data, i.epicId)),
                 h("td", {}, statusPill(i.status)),
                 h("td", {}, h("span", { class: "cell-person" }, avatar(i.assigneeId, { size: 22 }), nameOf(i.assigneeId) || h("span", { class: "muted", text: "нет" }))),
                 h("td", {}, h("span", { class: "cell-person" }, priorityIcon(i.priority), PRIORITY[i.priority])),

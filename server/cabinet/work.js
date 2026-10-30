@@ -8,6 +8,9 @@
 const TYPES = ["task", "bug", "story", "epic"];
 const STATUSES = ["todo", "progress", "review", "test", "done"];
 const PRIORITIES = ["urgent", "high", "medium", "low"];
+// Связи задач, как в Jira: «блокирует», «связана с», «дублирует». Обратная сторона считается на лету.
+const LINK_TYPES = ["blocks", "relates", "duplicates"];
+const MENTION_RE = /@([a-z0-9][a-z0-9._-]{2,63})/gi;
 const HISTORY_MAX = 300;
 const VERSIONS_MAX = 30;
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -76,20 +79,33 @@ function registerWork(ctx) {
   }
   const spaceView = (p, user) => ({
     id: p.id, title: p.title, key: p.key, folder: p.folder || "", logo: p.logo?.id || "", summary: p.summary || "",
-    canManage: canManage(user), clientView: canSee(user, p),
+    canManage: canManage(user), clientView: canSee(user, p), wip: p.wip || {},
   });
 
   /* ---------- Задачи ---------- */
   const keyOf = (p, i) => `${p.key}-${i.number}`;
   const hours = (n) => Math.round(n * 100) / 100;
   const spentOf = (i) => hours(i.worklogs.reduce((n, w) => n + w.hours, 0));
-  const summary = (i, p) => ({
+  // Задача заблокирована, если её блокирует незавершённая задача.
+  const blockedSet = () => new Set(db.issues.filter((x) => x.status !== "done").flatMap((x) => (x.links || []).filter((l) => l.type === "blocks").map((l) => l.to)));
+  const summary = (i, p, blocked = blockedSet()) => ({
     id: i.id, key: keyOf(p, i), number: i.number, projectId: i.projectId, type: i.type, title: i.title, status: i.status,
     priority: i.priority, assigneeId: i.assigneeId, reporterId: i.reporterId, labels: i.labels, estimate: i.estimate,
     spent: spentOf(i), due: i.due, start: i.start, epicId: i.epicId, sprintId: i.sprintId, rank: i.rank,
     checks: { done: i.checklist.filter((c) => c.done).length, total: i.checklist.length },
     comments: i.comments.length, files: i.files.length, createdAt: i.createdAt, updatedAt: i.updatedAt, doneAt: i.doneAt,
+    blocked: blocked.has(i.id), links: (i.links || []).length,
   });
+  const linkBrief = (x, p) => ({ id: x.id, key: keyOf(p, x), title: x.title, status: x.status, type: x.type });
+  // Связи в обе стороны: свои (out) и те, где задача — цель чужой связи (in). ownerId — у кого связь хранится.
+  function linksOf(i, p) {
+    const out = (i.links || []).map((l) => {
+      const x = db.issues.find((y) => y.id === l.to);
+      return x && { id: l.id, type: l.type, direction: "out", ownerId: i.id, issue: linkBrief(x, p) };
+    });
+    const inward = issuesOf(p.id).flatMap((x) => (x.links || []).filter((l) => l.to === i.id).map((l) => ({ id: l.id, type: l.type, direction: "in", ownerId: x.id, issue: linkBrief(x, p) })));
+    return [...out.filter(Boolean), ...inward];
+  }
   const full = (i, p) => ({
     ...summary(i, p),
     description: i.description,
@@ -98,6 +114,7 @@ function registerWork(ctx) {
     worklogs: [...i.worklogs].sort((a, b) => b.date.localeCompare(a.date) || b.at.localeCompare(a.at)),
     files: i.files,
     history: [...i.history].reverse(),
+    links: linksOf(i, p),
     project: { id: p.id, key: p.key, title: p.title },
   });
   function findIssue(user, id) {
@@ -210,7 +227,10 @@ function registerWork(ctx) {
     return {
       body: {
         project: spaceView(p, user),
-        issues: issuesOf(p.id).sort((a, b) => a.rank - b.rank).map((i) => summary(i, p)),
+        issues: (() => {
+          const blocked = blockedSet();
+          return issuesOf(p.id).sort((a, b) => a.rank - b.rank).map((i) => summary(i, p, blocked));
+        })(),
         sprints: db.sprints.filter((s) => s.projectId === p.id),
         team: team(),
         members: membersOf(p),
@@ -221,6 +241,17 @@ function registerWork(ctx) {
   route("PATCH", "/api/work/projects/:id", async ({ user, params, body }) => {
     const p = findSpace(user, params.id);
     if (!canManage(user)) fail(403, "forbidden");
+    // WIP-лимиты колонок: сколько задач может одновременно стоять в статусе. 0 или пусто — без лимита.
+    if ("wip" in body) {
+      if (!body.wip || typeof body.wip !== "object" || Array.isArray(body.wip)) fail(400, "wip");
+      const wip = {};
+      for (const s of STATUSES) {
+        const n = Number(body.wip[s] || 0);
+        if (!Number.isInteger(n) || n < 0 || n > 99) fail(400, "wip");
+        if (n) wip[s] = n;
+      }
+      p.wip = wip;
+    }
     if ("key" in body) {
       const key = str(body.key, 10).toUpperCase();
       if (!KEY_RE.test(key)) fail(400, "key");
@@ -249,7 +280,7 @@ function registerWork(ctx) {
     const at = iso();
     const i = {
       id: store.id(), projectId: p.id, number: (p.issueSeq = (p.issueSeq || 0) + 1),
-      description: "", assigneeId: "", reporterId: user.id, labels: [], estimate: null, due: "", start: "", epicId: "", sprintId: "",
+      description: "", assigneeId: "", reporterId: user.id, labels: [], estimate: null, due: "", start: "", epicId: "", sprintId: "", links: [],
       rank: Math.max(0, ...issuesOf(p.id).map((x) => x.rank)) + 1000,
       checklist: [], comments: [], worklogs: [], files: [], history: [],
       createdAt: at, updatedAt: at, doneAt: "",
@@ -292,10 +323,41 @@ function registerWork(ctx) {
     const { i, p } = findIssue(user, params.id);
     if (!canManage(user) && i.reporterId !== user.id) fail(403, "forbidden");
     for (const f of i.files) store.deleteFile(f.id);
-    for (const x of issuesOf(p.id)) if (x.epicId === i.id) x.epicId = "";
+    for (const x of issuesOf(p.id)) {
+      if (x.epicId === i.id) x.epicId = "";
+      if (x.links) x.links = x.links.filter((l) => l.to !== i.id);
+    }
     db.issues.splice(db.issues.indexOf(i), 1);
     store.save();
     changed(p, client, user, [i.id]);
+    return { body: { ok: true } };
+  }, "team");
+
+  /* Связи */
+  route("POST", "/api/work/issues/:id/links", async ({ user, params, body, client }) => {
+    const { i, p } = findIssue(user, params.id);
+    const type = LINK_TYPES.includes(body.type) ? body.type : fail(400, "link");
+    const target = db.issues.find((x) => x.id === body.issueId && x.projectId === p.id);
+    if (!target || target.id === i.id) fail(400, "link");
+    i.links = i.links || [];
+    const exists = i.links.some((l) => l.to === target.id && l.type === type)
+      || (type === "relates" && (target.links || []).some((l) => l.to === i.id && l.type === "relates"));
+    if (exists) fail(409, "link_exists");
+    if (i.links.length >= 50) fail(400, "link");
+    i.links.push({ id: store.id(), type, to: target.id, by: user.id, at: iso() });
+    i.updatedAt = iso();
+    store.save();
+    changed(p, client, user, [i.id, target.id]);
+    return { status: 201, body: { issue: full(i, p) } };
+  }, "team");
+
+  // :id — задача, у которой связь хранится (ownerId из карточки).
+  route("DELETE", "/api/work/issues/:id/links/:linkId", async ({ user, params, client }) => {
+    const { i, p } = findIssue(user, params.id);
+    const link = (i.links || []).find((l) => l.id === params.linkId) || fail(404, "not_found");
+    i.links = i.links.filter((l) => l !== link);
+    store.save();
+    changed(p, client, user, [i.id, link.to]);
     return { body: { ok: true } };
   }, "team");
 
@@ -581,24 +643,49 @@ function registerWork(ctx) {
   }, "team");
 
   /* ---------- Моя работа ---------- */
+  const mentions = (text, login) => [...String(text).matchAll(MENTION_RE)].some((m) => m[1].toLowerCase() === login);
+  // Лента за две недели: что другие сделали с моими задачами (где я исполнитель или автор) и где меня упомянули.
+  function feedFor(user, byId) {
+    const since = now() - 14 * DAY;
+    const feed = [];
+    for (const i of db.issues.filter((x) => byId.has(x.projectId))) {
+      const mine = i.assigneeId === user.id || i.reporterId === user.id;
+      const issue = { id: i.id, key: keyOf(byId.get(i.projectId), i), title: i.title, type: i.type };
+      for (const c of i.comments) {
+        if (c.authorId === user.id || Date.parse(c.at) <= since) continue;
+        if (mentions(c.text, user.login)) feed.push({ kind: "mention", at: c.at, by: nameOf(c.authorId), text: c.text.slice(0, 280), issue });
+        else if (mine) feed.push({ kind: "comment", at: c.at, by: nameOf(c.authorId), text: c.text.slice(0, 280), issue });
+      }
+      if (!mine) continue;
+      for (const h of i.history) if (h.by !== user.id && Date.parse(h.at) > since) feed.push({ kind: "change", at: h.at, by: nameOf(h.by), field: h.field, from: h.from, to: h.to, issue });
+      if (i.reporterId !== user.id && i.assigneeId === user.id && Date.parse(i.createdAt) > since && !i.history.some((h) => h.field === "assigneeId")) {
+        feed.push({ kind: "created", at: i.createdAt, by: nameOf(i.reporterId), issue });
+      }
+    }
+    return feed.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 40);
+  }
+
+  // Счётчик для вкладки «Работа»: сколько в ленте нового с последнего захода на «Мою работу».
+  route("GET", "/api/work/unread", async ({ user }) => {
+    const seen = user.workSeenAt || "";
+    return { body: { count: feedFor(user, new Map(spaces(user).map((p) => [p.id, p]))).filter((x) => x.at > seen).length } };
+  }, "team");
+
+  route("POST", "/api/work/seen", async ({ user }) => {
+    user.workSeenAt = iso();
+    store.save();
+    return { body: { ok: true } };
+  }, "team");
+
   route("GET", "/api/work/me", async ({ user }) => {
     const mine = spaces(user);
     const byId = new Map(mine.map((p) => [p.id, p]));
     const all = db.issues.filter((i) => byId.has(i.projectId));
     const since = now() - 14 * DAY;
     const recentDone = (i) => i.status !== "done" || Date.parse(i.doneAt || i.updatedAt) > now() - 7 * DAY;
-    const brief = (i) => ({ ...summary(i, byId.get(i.projectId)), projectTitle: byId.get(i.projectId).title });
-
-    // Что другие сделали с моими задачами (где я исполнитель или автор) за две недели.
-    const feed = [];
-    for (const i of all.filter((x) => x.assigneeId === user.id || x.reporterId === user.id)) {
-      const issue = { id: i.id, key: keyOf(byId.get(i.projectId), i), title: i.title, type: i.type };
-      for (const h of i.history) if (h.by !== user.id && Date.parse(h.at) > since) feed.push({ kind: "change", at: h.at, by: nameOf(h.by), field: h.field, from: h.from, to: h.to, issue });
-      for (const c of i.comments) if (c.authorId !== user.id && Date.parse(c.at) > since) feed.push({ kind: "comment", at: c.at, by: nameOf(c.authorId), text: c.text.slice(0, 280), issue });
-      if (i.reporterId !== user.id && i.assigneeId === user.id && Date.parse(i.createdAt) > since && !i.history.some((h) => h.field === "assigneeId")) {
-        feed.push({ kind: "created", at: i.createdAt, by: nameOf(i.reporterId), issue });
-      }
-    }
+    const blocked = blockedSet();
+    const brief = (i) => ({ ...summary(i, byId.get(i.projectId), blocked), projectTitle: byId.get(i.projectId).title });
+    const feed = feedFor(user, byId);
     const worklogs = [];
     for (const i of all) {
       for (const w of i.worklogs) if (w.userId === user.id && Date.parse(w.date) > since) worklogs.push({ ...w, key: keyOf(byId.get(i.projectId), i), title: i.title, issueId: i.id });
@@ -612,7 +699,8 @@ function registerWork(ctx) {
         projects: mine.sort((a, b) => a.title.localeCompare(b.title, "ru")).map((p) => spaceSummary(p, user)),
         assigned: all.filter((i) => i.assigneeId === user.id && i.type !== "epic" && recentDone(i)).map(brief),
         reported: all.filter((i) => i.reporterId === user.id && i.assigneeId !== user.id && i.status !== "done" && i.type !== "epic").map(brief),
-        feed: feed.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 40),
+        feed,
+        seenAt: user.workSeenAt || "",
         worklogs,
         recent,
         team: team(),

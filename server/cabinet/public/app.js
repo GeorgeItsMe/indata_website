@@ -273,10 +273,20 @@
     if (href === "/") return path === "/" || path.startsWith("/p/");
     return path.startsWith(href);
   }
+  // Счётчики на вкладках (например, новое в «Работе»); work.js обновляет их сам.
+  const navBadges = {};
+  const navBadge = (href) => (navBadges[href] ? h("span", { class: "badge tabs__badge", text: String(navBadges[href]) }) : null);
+  function setNavBadge(href, n) {
+    navBadges[href] = n;
+    for (const a of document.querySelectorAll(`.tabs a[href="${href}"]`)) {
+      a.querySelector(".tabs__badge")?.remove();
+      append(a, [navBadge(href)]);
+    }
+  }
   function shell(...content) {
     const nav = NAV[me.role]
       ? h("nav", { class: "tabs", "aria-label": "Разделы" },
-        NAV[me.role].map(([href, label]) => link(href, { "aria-current": isCurrent(href) ? "page" : null }, label)))
+        NAV[me.role].map(([href, label]) => link(href, { "aria-current": isCurrent(href) ? "page" : null }, label, navBadge(href))))
       : null;
     return [
       h("header", { class: "top" },
@@ -1988,7 +1998,7 @@
   window.InData = {
     h, append, link, btn, setBtnLabel, backLink, fmtDate, fmtRange, fileSize, today, plural, hostOf,
     api, ApiError, errorText, toast, navigate, shell, loading, root, CLIENT, ROLE_LABELS, ERRORS, TEAM_ROLES,
-    logoSrc,
+    logoSrc, setNavBadge,
     me: () => me,
     addRoutes: (list) => ROUTES.splice(ROUTES.length, 0, ...list),
     setLeaveGuard: (fn) => { leaveGuard = fn; },

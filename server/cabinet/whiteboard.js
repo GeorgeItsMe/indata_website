@@ -69,8 +69,9 @@ function registerBoards(ctx) {
   function boardMeta(b) {
     const p = b.projectId ? db.projects.find((x) => x.id === b.projectId) : null;
     if (p) work.ensureKey(p);
+    const timer = b.timer && Date.parse(b.timer.endsAt) > now() ? { ...b.timer, left: Date.parse(b.timer.endsAt) - now() } : null;
     return {
-      id: b.id, projectId: b.projectId, title: b.title, count: b.count || 0,
+      id: b.id, projectId: b.projectId, title: b.title, count: b.count || 0, timer,
       createdAt: b.createdAt, createdBy: nameOf(b.createdBy), updatedAt: b.updatedAt, updatedBy: nameOf(b.updatedBy),
       project: p ? { id: p.id, title: p.title, key: p.key } : null,
     };
@@ -148,8 +149,12 @@ function registerBoards(ctx) {
     const adds = new Set(clean.filter((op) => op.op === "put" && !d.items.has(op.item.id)).map((op) => op.item.id));
     if (d.items.size + adds.size > MAX_ITEMS) fail(400, "board_full");
     for (const op of clean) {
-      if (op.op === "put") d.items.set(op.item.id, op.item);
-      else d.items.delete(op.id);
+      if (op.op === "put") {
+        // Голоса меняются только отдельным запросом: перенос стикера не должен стирать чужие голоса.
+        const prev = d.items.get(op.item.id);
+        if (prev?.votes?.length) op.item.votes = prev.votes;
+        d.items.set(op.item.id, op.item);
+      } else d.items.delete(op.id);
     }
     d.version += 1;
     return clean;
@@ -279,6 +284,38 @@ function registerBoards(ctx) {
         alive: () => sessions.user(token)?.id === user.id && db.boards.includes(b) && canOpen(user, b),
       }),
     };
+  }, "team");
+
+  // Голосование точками, как на ретро в Miro: повторный голос снимает свой.
+  route("POST", "/api/work/boards/:id/vote", async ({ user, params, body }) => {
+    const b = findBoard(user, params.id);
+    const d = docOf(b);
+    const it = d.items.get(ref(body.itemId)) || fail(404, "not_found");
+    if (!["sticky", "shape", "text", "image", "issue"].includes(it.type)) fail(400, "item");
+    const votes = new Set(it.votes || []);
+    if (votes.has(user.id)) votes.delete(user.id);
+    else votes.add(user.id);
+    const next = { ...it, votes: [...votes].slice(0, 200) };
+    if (!next.votes.length) delete next.votes;
+    d.items.set(it.id, next);
+    d.version += 1;
+    b.updatedAt = iso();
+    b.updatedBy = user.id;
+    schedule(b, d);
+    hub.publish(`board:${b.id}`, "ops", { version: d.version, client: "", seq: "", by: user.name, ops: [{ op: "put", item: next }] });
+    return { body: { version: d.version, votes: next.votes || [] } };
+  }, "team");
+
+  // Общий таймер доски: видят все, кто открыл доску. seconds = 0 — остановить.
+  route("POST", "/api/work/boards/:id/timer", async ({ user, params, body }) => {
+    const b = findBoard(user, params.id);
+    const seconds = Math.round(Number(body.seconds) || 0);
+    if (seconds < 0 || seconds > 3600) fail(400, "timer");
+    b.timer = seconds ? { endsAt: new Date(now() + seconds * 1000).toISOString(), total: seconds, by: user.name } : null;
+    store.save();
+    const timer = boardMeta(b).timer;
+    hub.publish(`board:${b.id}`, "timer", { timer, by: user.name });
+    return { body: { timer } };
   }, "team");
 
   // Курсоры не сохраняются: только расходятся остальным.

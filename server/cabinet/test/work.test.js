@@ -376,6 +376,69 @@ test("живые обновления: операции доски, курсор
   assert.equal((await outsider("GET", `/api/work/projects/${p1.id}/events`)).status, 404);
 });
 
+test("связи задач, WIP-лимиты, упоминания и непрочитанное", async () => {
+  const blocker = (await pm("POST", `/api/work/projects/${p1.id}/issues`, { title: "API столов" })).json.issue;
+  const linked = await pm("POST", `/api/work/issues/${blocker.id}/links`, { type: "blocks", issueId: task.id });
+  assert.equal(linked.status, 201);
+  assert.deepEqual(linked.json.issue.links.map((l) => [l.type, l.direction, l.issue.key]), [["blocks", "out", task.key]]);
+  assert.equal((await pm("POST", `/api/work/issues/${blocker.id}/links`, { type: "blocks", issueId: task.id })).status, 409);
+  assert.equal((await pm("POST", `/api/work/issues/${blocker.id}/links`, { type: "nope", issueId: task.id })).status, 400);
+  assert.equal((await pm("POST", `/api/work/issues/${blocker.id}/links`, { type: "relates", issueId: blocker.id })).status, 400, "сама с собой не связывается");
+  const target = (await dev("GET", `/api/work/issues/${task.id}`)).json.issue;
+  assert.deepEqual(target.links.map((l) => [l.type, l.direction, l.issue.key, l.ownerId]), [["blocks", "in", blocker.key, blocker.id]]);
+  assert.equal(target.blocked, true, "задачу блокирует незавершённая");
+  await pm("PATCH", `/api/work/issues/${blocker.id}`, { status: "done" });
+  assert.equal((await dev("GET", `/api/work/issues/${task.id}`)).json.issue.blocked, false);
+  const linkId = target.links[0].id;
+  assert.equal((await dev("DELETE", `/api/work/issues/${blocker.id}/links/${linkId}`)).status, 200);
+  await pm("POST", `/api/work/issues/${blocker.id}/links`, { type: "relates", issueId: task.id });
+  await pm("DELETE", `/api/work/issues/${blocker.id}`);
+  assert.deepEqual((await dev("GET", `/api/work/issues/${task.id}`)).json.issue.links, [], "связи удалённой задачи исчезают");
+
+  assert.equal((await dev("PATCH", `/api/work/projects/${p1.id}`, { wip: { progress: 3 } })).status, 403, "лимиты ставит менеджер");
+  assert.equal((await pm("PATCH", `/api/work/projects/${p1.id}`, { wip: { progress: 100 } })).status, 400);
+  assert.deepEqual((await pm("PATCH", `/api/work/projects/${p1.id}`, { wip: { progress: 3, review: 0 } })).json.project.wip, { progress: 3 });
+
+  await dev("POST", "/api/work/seen");
+  const other = (await pm("POST", `/api/work/projects/${p1.id}/issues`, { title: "Чужая задача" })).json.issue;
+  await pm("POST", `/api/work/issues/${other.id}/comments`, { text: "@dev глянь, пожалуйста" });
+  await pm("POST", `/api/work/issues/${other.id}/comments`, { text: "без упоминания" });
+  const me = (await dev("GET", "/api/work/me")).json;
+  assert.ok(me.feed.some((x) => x.kind === "mention" && x.issue.id === other.id), "упоминание в чужой задаче попадает в ленту");
+  assert.ok(!me.feed.some((x) => x.text === "без упоминания"), "чужие задачи без упоминания — нет");
+  assert.ok(me.seenAt);
+  assert.equal((await dev("GET", "/api/work/unread")).json.count, 1);
+  await dev("POST", "/api/work/seen");
+  assert.equal((await dev("GET", "/api/work/unread")).json.count, 0);
+});
+
+test("доска: голосование точками и общий таймер", async () => {
+  await pm("POST", `/api/work/boards/${board.id}/ops`, { client: "tab-pm", ops: [{ op: "put", item: { id: "vote0001", type: "sticky", x: 0, y: 0, w: 200, h: 200, text: "Идея" } }] });
+  const stream = await dev.events(`/api/work/boards/${board.id}/events?client=tab-dev`);
+  await stream.next("hello");
+  assert.deepEqual((await dev("POST", `/api/work/boards/${board.id}/vote`, { itemId: "vote0001" })).json.votes, [devUser.id]);
+  assert.deepEqual((await stream.next("ops")).ops[0].item.votes, [devUser.id]);
+  await pm("POST", `/api/work/boards/${board.id}/vote`, { itemId: "vote0001" });
+  // Перенос стикера со старой копией не стирает голоса.
+  await dev("POST", `/api/work/boards/${board.id}/ops`, { client: "tab-dev", ops: [{ op: "put", item: { id: "vote0001", type: "sticky", x: 50, y: 0, w: 200, h: 200, text: "Идея", votes: [] } }] });
+  let item = (await pm("GET", `/api/work/boards/${board.id}`)).json.items.find((it) => it.id === "vote0001");
+  assert.deepEqual([item.x, item.votes.length], [50, 2]);
+  await dev("POST", `/api/work/boards/${board.id}/vote`, { itemId: "vote0001" });
+  item = (await pm("GET", `/api/work/boards/${board.id}`)).json.items.find((it) => it.id === "vote0001");
+  assert.deepEqual(item.votes, [pmUser.id], "повторный голос снимает свой");
+  assert.equal((await dev("POST", `/api/work/boards/${board.id}/vote`, { itemId: "nothing0" })).status, 404);
+
+  const t = await pm("POST", `/api/work/boards/${board.id}/timer`, { seconds: 300 });
+  assert.equal(t.json.timer.total, 300);
+  const ev = await stream.next("timer");
+  assert.equal(ev.timer.by, "ПМ");
+  assert.ok(ev.timer.left > 290000 && ev.timer.left <= 300000);
+  assert.equal((await dev("GET", `/api/work/boards/${board.id}`)).json.board.timer.total, 300);
+  assert.equal((await pm("POST", `/api/work/boards/${board.id}/timer`, { seconds: 5000 })).status, 400);
+  assert.equal((await pm("POST", `/api/work/boards/${board.id}/timer`, { seconds: 0 })).json.timer, null);
+  stream.close();
+});
+
 test("доска сохраняется на диск и переживает перезапуск", async () => {
   handle.flush();
   const again = createApp({ dataDir, origins: [ORIGIN], secureCookie: false, log: { error() {} } });

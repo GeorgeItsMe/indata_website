@@ -51,7 +51,10 @@
     copy: "M5.5 5.5h8v8h-8zM10.5 5.5v-3h-8v8h3",
     lock: "M4 7.5h8v6H4zM5.5 7.5V5a2.5 2.5 0 0 1 5 0v2.5",
     help: "M6 6a2 2 0 1 1 2.8 1.8c-.5.3-.8.7-.8 1.2v.5M8 12h.01",
+    vote: "M8 13.5s-5.5-3.2-5.5-7A3 3 0 0 1 8 4.8a3 3 0 0 1 5.5 1.7c0 3.8-5.5 7-5.5 7z",
+    timer: "M8 14.5A5.5 5.5 0 1 0 8 3.5a5.5 5.5 0 0 0 0 11zM8 6v3l2 1.2M6.5 1.5h3",
   };
+  const VOTABLE = new Set(["sticky", "shape", "text", "image", "issue"]);
   const icon = (name) => svg("svg", { viewBox: "0 0 16 16", class: "ico", "aria-hidden": "true" }, svg("path", { d: TOOL_ICONS[name] }));
   const TOOLS = [
     ["select", "Выделение", "V"], ["hand", "Рука: двигать холст", "H"], ["sticky", "Стикер", "N"], ["text", "Текст", "T"],
@@ -152,6 +155,59 @@
     const statusEl = h("span", { class: "wb-status mono", text: "Сохранено" });
     const zoomLabel = h("button", { class: "wb-zoom__label mono", type: "button", title: "100% (Shift+0)", onclick: () => zoomTo(1) });
     const presenceEl = h("div", { class: "wb-presence" });
+    // Общий таймер: время конца считаем по своим часам от остатка, который прислал сервер.
+    let timer = null;
+    const timerEl = h("button", { class: "wb-timer mono", type: "button", title: "Таймер для всех на доске", onclick: () => timerMenu() });
+    const setTimer = (t) => { timer = t ? { ...t, endsAt: Date.now() + t.left } : null; drawTimer(); };
+    function drawTimer() {
+      timerEl.replaceChildren(icon("timer"));
+      timerEl.classList.remove("is-on", "is-ending", "is-done");
+      if (!timer) return;
+      const left = Math.max(0, Math.ceil((timer.endsAt - Date.now()) / 1000));
+      timerEl.classList.add("is-on");
+      if (left <= 10) timerEl.classList.add(left ? "is-ending" : "is-done");
+      timerEl.append(left ? `${String(Math.floor(left / 60)).padStart(2, "0")}:${String(left % 60).padStart(2, "0")}` : "Время!");
+      if (!left && !timer.rang) {
+        timer.rang = true;
+        toast("Время вышло");
+        setTimeout(() => { if (timer?.rang) setTimer(null); }, 6000);
+      }
+    }
+    const timerTick = setInterval(() => { if (timer) drawTimer(); }, 500);
+    I.onLeave(() => clearInterval(timerTick));
+    async function runTimer(seconds) {
+      try {
+        setTimer((await api("POST", `/api/work/boards/${id}/timer`, { seconds })).timer);
+      } catch (err) {
+        toast(errorText(err));
+      }
+    }
+    function timerMenu() {
+      let ui;
+      const choose = (s) => { ui.close(true); runTimer(s); };
+      ui = dialog("Таймер для всех", h("div", { class: "stack" },
+        h("p", { class: "muted", text: "Видят все, кто сейчас на доске: удобно для ретро и мозговых штурмов." }),
+        h("div", { class: "timer-picks" }, [1, 3, 5, 10, 15].map((m) => btn(`${m} мин`, { variant: "light", onclick: () => choose(m * 60) }))),
+        timer ? h("div", { class: "actions" },
+          btn("+1 минута", { variant: "light", small: true, onclick: () => choose(Math.ceil((timer.endsAt - Date.now()) / 1000) + 60) }),
+          btn("Остановить", { small: true, onclick: () => choose(0) })) : null));
+    }
+    async function vote(list) {
+      for (const it of list.filter((x) => VOTABLE.has(x.type))) {
+        try {
+          const res = await api("POST", `/api/work/boards/${id}/vote`, { itemId: it.id });
+          const cur = items.get(it.id);
+          if (cur) {
+            if (res.votes.length) cur.votes = res.votes;
+            else delete cur.votes;
+            renderItem(cur);
+            drawSelection();
+          }
+        } catch (err) {
+          toast(errorText(err));
+        }
+      }
+    }
     const titleInput = h("input", { class: "wb-title", value: board.title, maxlength: "160", "aria-label": "Название доски" });
     titleInput.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Escape") titleInput.blur(); });
     titleInput.addEventListener("blur", async () => {
@@ -206,6 +262,7 @@
         titleInput),
       h("div", { class: "wb-top__right" },
         presenceEl,
+        timerEl,
         statusEl,
         h("div", { class: "wb-zoom" },
           h("button", { class: "icon-btn", type: "button", title: "Отдалить (−)", "aria-label": "Отдалить", text: "−", onclick: () => zoomBy(1 / 1.2) }),
@@ -416,6 +473,18 @@
         case "line": renderLine(node, it); break;
         case "pen": renderPen(node, it); break;
       }
+      if (VOTABLE.has(it.type)) {
+        let badge = node.querySelector(":scope > .wb-votes");
+        if (it.votes?.length) {
+          if (!badge) {
+            badge = h("span", { class: "wb-votes" });
+            node.append(badge);
+          }
+          badge.textContent = String(it.votes.length);
+          badge.classList.toggle("is-mine", it.votes.includes(I.me().id));
+          badge.title = `Голосов: ${it.votes.length}${it.votes.includes(I.me().id) ? ", в том числе ваш" : ""}`;
+        } else badge?.remove();
+      }
       if (it.type === "text") {
         // Высота текста — по содержимому; помним её локально для рамки выделения.
         const hgt = node.offsetHeight;
@@ -622,6 +691,14 @@
       if ((one === "sticky" || one === "text" || one === "shape") && list.length === 1 && board.projectId && list[0].text.trim()) {
         parts.push(btn("Сделать задачей", { small: true, onclick: () => toIssue(list[0]) }));
       }
+      if (list.some((it) => VOTABLE.has(it.type))) {
+        const mine = list.every((it) => it.votes?.includes(I.me().id));
+        const count = list.length === 1 ? list[0].votes?.length || 0 : 0;
+        parts.push(h("div", { class: "wb-ctx__seg" }, h("button", {
+          class: `wb-ctx__btn wb-ctx__vote${mine ? " is-on" : ""}`, type: "button", title: mine ? "Снять голос" : "Проголосовать",
+          "aria-label": mine ? "Снять голос" : "Проголосовать", onclick: () => vote(list),
+        }, icon("vote"), count ? String(count) : "")));
+      }
       const locked = list.every((it) => it.locked);
       parts.push(h("div", { class: "wb-ctx__seg" },
         ctxTool("На передний план (])", "front", () => reorder(list, "front")),
@@ -785,8 +862,16 @@
       const now = [];
       for (const op of ev.ops) {
         const key = op.op === "put" ? op.item.id : op.id;
-        if (pend.has(key)) buffered.push({ version: ev.version, op });
-        else now.push(op);
+        if (pend.has(key)) {
+          buffered.push({ version: ev.version, op });
+          // Голоса сервер хранит отдельно от правок: их показываем сразу.
+          const cur = items.get(key);
+          if (op.op === "put" && cur && JSON.stringify(cur.votes || []) !== JSON.stringify(op.item.votes || [])) {
+            if (op.item.votes) cur.votes = op.item.votes;
+            else delete cur.votes;
+            renderItem(cur);
+          }
+        } else now.push(op);
       }
       if (now.length) applyRemote(now);
     }
@@ -876,6 +961,10 @@
         const others = members.filter((m) => m.userId !== I.me().id);
         presenceEl.replaceChildren(...others.slice(0, 6).map((m) => avatar(m.userId, { size: 28 })), others.length ? "" : h("span", { class: "mono muted", text: "вы одни" }));
         presenceEl.title = others.length ? `Сейчас на доске: ${others.map((m) => m.name).join(", ")}` : "";
+      },
+      timer: (ev) => {
+        setTimer(ev.timer);
+        if (ev.by !== I.me().name) toast(ev.timer ? `Таймер на ${Math.round(ev.timer.total / 60)} мин: ${ev.by}` : `Таймер остановлен: ${ev.by}`);
       },
       meta: (ev) => {
         board = { ...board, ...ev.board };
@@ -1584,6 +1673,7 @@
     }
 
     /* --- Старт --- */
+    setTimer(board.timer);
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); } catch {}
     renderAll();
