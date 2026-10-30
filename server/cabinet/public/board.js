@@ -57,6 +57,71 @@
   };
   I.ERRORS.private = "Это приватный стикер коллеги: его откроют, когда выключат приватный режим";
   const VOTABLE = new Set(["sticky", "shape", "text", "image", "issue"]);
+
+  /* ---------- Группировка стикеров по темам ----------
+     Без внешнего ИИ: слова без служебных и окончаний, похожесть по общим словам (Жаккар),
+     затем жадное объединение групп со средней похожестью не ниже порога. */
+  const STOP = new Set(("и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по только ее мне было вот от меня еще нет о из ему " +
+    "теперь когда даже ну вдруг ли если уже или ни быть был него до вас нибудь опять уж вам ведь там потом себя ничего ей может они тут где есть надо " +
+    "ней для мы тебя их чем была сам чтоб без будто чего раз тоже себе под будет ж тогда кто этот того потому этого какой совсем ним здесь этом один " +
+    "почти мой тем чтобы нее сейчас были куда зачем всех никогда можно при наконец два об другой хоть после над больше тот через эти нас про всего них " +
+    "какая много разве три эту моя впрочем хорошо свою этой перед иногда лучше чуть том нельзя такой им более всегда конечно всю между это the a an of to and is in for")
+    .split(" "));
+  function stems(text) {
+    const out = new Set();
+    for (const raw of String(text).toLowerCase().replace(/ё/g, "е").split(/[^a-zа-я0-9]+/)) {
+      if (raw.length < 3 || STOP.has(raw)) continue;
+      let w = raw;
+      if (/[а-я]/.test(w) && w.length > 4) w = w.replace(/(иями|ями|ами|иях|ях|ах|ией|ием|ого|его|ому|ему|ыми|ими|ой|ей|ий|ый|ая|яя|ое|ее|ые|ие|ую|юю|ом|ем|ам|ям|ов|ев|ть|а|я|о|е|ы|и|у|ю|ь)$/, "");
+      out.add(w.slice(0, 7));
+    }
+    return out;
+  }
+  const jaccard = (a, b) => {
+    let common = 0;
+    for (const x of a) if (b.has(x)) common++;
+    return common ? common / (a.size + b.size - common) : 0;
+  };
+  // Возвращает группы id и подпись к каждой (самое частое слово группы в исходном написании).
+  function clusterTexts(list, threshold = 0.2) {
+    const sets = new Map(list.map((it) => [it.id, stems(it.text)]));
+    let groups = list.map((it) => [it.id]);
+    const sim = (g1, g2) => {
+      let sum = 0;
+      for (const a of g1) for (const b of g2) sum += jaccard(sets.get(a), sets.get(b));
+      return sum / (g1.length * g2.length);
+    };
+    for (;;) {
+      let best = null;
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          const s = sim(groups[i], groups[j]);
+          if (s >= threshold && (!best || s > best.s)) best = { i, j, s };
+        }
+      }
+      if (!best) break;
+      groups[best.i] = [...groups[best.i], ...groups[best.j]];
+      groups.splice(best.j, 1);
+    }
+    const byId = new Map(list.map((it) => [it.id, it]));
+    const label = (ids) => {
+      const freq = new Map();
+      const word = new Map();
+      for (const x of ids) {
+        for (const raw of byId.get(x).text.split(/[^A-Za-zА-Яа-яЁё0-9]+/)) {
+          const st = [...stems(raw)][0];
+          if (!st) continue;
+          freq.set(st, (freq.get(st) || 0) + 1);
+          if (!word.has(st)) word.set(st, raw.toLowerCase());
+        }
+      }
+      const top = [...freq].sort((a, b) => b[1] - a[1])[0];
+      return top && top[1] > 1 ? word.get(top[0]) : "";
+    };
+    const real = groups.filter((g) => g.length > 1).sort((a, b) => b.length - a.length);
+    const rest = groups.filter((g) => g.length === 1).flat();
+    return [...real.map((ids) => ({ ids, title: label(ids) || "Тема" })), ...(rest.length ? [{ ids: rest, title: "Разное" }] : [])];
+  }
   const icon = (name) => svg("svg", { viewBox: "0 0 16 16", class: "ico", "aria-hidden": "true" }, svg("path", { d: TOOL_ICONS[name] }));
   const TOOLS = [
     ["select", "Выделение", "V"], ["hand", "Рука: двигать холст", "H"], ["sticky", "Стикер", "N"], ["text", "Текст", "T"],
@@ -723,6 +788,8 @@
       if ((one === "sticky" || one === "text" || one === "shape") && list.length === 1 && board.projectId && list[0].text.trim()) {
         parts.push(btn("Сделать задачей", { small: true, onclick: () => toIssue(list[0]) }));
       }
+      const groupable = list.filter((it) => it.type === "sticky" && !it.locked && it.text.trim());
+      if (groupable.length >= 3) parts.push(btn("Сгруппировать по темам", { small: true, variant: "light", onclick: () => groupByTheme(groupable) }));
       if (list.some((it) => VOTABLE.has(it.type))) {
         const mine = list.every((it) => it.votes?.includes(I.me().id));
         const count = list.length === 1 ? list[0].votes?.length || 0 : 0;
@@ -1117,6 +1184,30 @@
       } catch (err) {
         toast(errorText(err));
       }
+    }
+
+    // Раскладывает выделенные стикеры колонками по темам, над колонкой — подпись. Ctrl+Z отменяет целиком.
+    function groupByTheme(list) {
+      const groups = clusterTexts(list);
+      if (groups.length === list.length && groups.every((g) => g.ids.length === 1)) return toast("Общих тем не нашлось: стикеры слишком разные");
+      const box = bboxOf(list);
+      const before = [];
+      const after = [];
+      let z = maxZ();
+      groups.forEach((g, col) => {
+        const x = box.x + col * 240;
+        const labelItem = { id: newId(), type: "text", x, y: box.y, w: 220, h: 36, z: ++z, text: `${g.title[0].toUpperCase()}${g.title.slice(1)} · ${g.ids.length}`, color: "black", size: 20, bold: true, align: "left" };
+        before.push(null);
+        after.push(labelItem);
+        g.ids.forEach((itemId, row) => {
+          const it = items.get(itemId);
+          before.push(clone(it));
+          after.push({ ...clone(it), x, y: box.y + 56 + row * (it.h + 20) });
+        });
+      });
+      commit(before, after);
+      select(after.filter((it) => it.type === "sticky").map((it) => it.id));
+      toast(`Тем: ${groups.filter((g) => g.title !== "Разное").length}${groups.some((g) => g.title === "Разное") ? ", остальное в «Разное»" : ""}`);
     }
 
     function reorder(list, where) {
