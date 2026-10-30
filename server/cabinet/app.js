@@ -2,13 +2,18 @@
 /* Кабинет клиента InData (app.indata.group): API и раздача интерфейса.
    Клиент видит свои проекты: этапы, задачи для него, созвоны с договорённостями, ленту обновлений,
    оплаты и документы.
-   Администратор заводит клиентов и проекты и ведёт их. */
+   Администратор заводит клиентов и проекты и ведёт их.
+   Команда (админ, менеджеры, разработчики) работает во внутренней части: задачи и спринты, вики, доски
+   (work.js, whiteboard.js). */
 
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { createStore } = require("./store.js");
 const { hashPassword, checkPassword, generatePassword, createSessions, createLimiter } = require("./auth.js");
+const { createHub } = require("./hub.js");
+const { registerWork } = require("./work.js");
+const { registerBoards } = require("./whiteboard.js");
 
 const JSON_LIMIT = 256 * 1024;
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -16,6 +21,9 @@ const LOGO_LIMIT = 1024 * 1024;
 const STATUSES = ["todo", "active", "done"];
 // Блоки проекта, которые можно скрыть от менеджера. Оплаты и суммы менеджер не видит никогда.
 const BLOCKS = ["tasks", "meetings", "updates", "files"];
+// Роли с доступом к проектам по списку projectIds; у разработчика в кабинете клиента только чтение.
+const PROJECT_ROLES = ["manager", "developer"];
+const ROLES = ["client", "manager", "developer", "admin"];
 const DEFAULT_STAGES = ["Аналитика", "Дизайн", "Разработка", "Тестирование", "Запуск"];
 // Эти типы браузер может показать сам; остальное отдаём как поток байт, чтобы загруженный
 // HTML или SVG не исполнился на нашем домене.
@@ -26,6 +34,10 @@ const LOGO_TYPES = {
   "image/jpeg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
   "image/webp": (b) => b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP",
 };
+// Картинки на досках и в вики: те же проверки и ещё GIF.
+const IMAGE_TYPES = { ...LOGO_TYPES, "image/gif": (b) => b.toString("latin1", 0, 4) === "GIF8" };
+const imageType = (type, data) => Boolean(IMAGE_TYPES[type] && IMAGE_TYPES[type](data));
+const PUBLIC_FILES = new Set(["/app.css", "/app.js", "/work.css", "/work.js", "/plan.js", "/wiki.js", "/board.js"]);
 const STATIC_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -57,6 +69,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   const sessions = createSessions(store, now);
   const limiter = createLimiter({ now });
   const routes = [];
+  const hub = createHub();
   const route = (method, pattern, handler, access = "user", { rawBody = false } = {}) => {
     const keys = [];
     const re = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return "([^/]+)"; })}$`);
@@ -68,6 +81,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     id: u.id, login: u.login, name: u.name, company: u.company || "", contact: u.contact || "", role: u.role,
     disabled: Boolean(u.disabled), createdAt: u.createdAt,
     ...(u.role === "manager" ? { projectIds: u.projectIds || [], hide: u.hide || [] } : {}),
+    ...(u.role === "developer" ? { projectIds: u.projectIds || [] } : {}),
     ...(u.role === "client" ? { projectIds: db.projects.filter((p) => p.clientIds.includes(u.id)).map((p) => p.id) } : {}),
   });
 
@@ -80,10 +94,15 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
      admin   — всё.
      client  — читает проекты, где он в clientIds, отмечает свои задачи.
      manager — свои проекты (projectIds): правит этапы, задачи, созвоны, ленту и документы, кроме скрытых
-               блоков (hide). Денег не видит, людьми и доступами не управляет, проекты не создаёт и не удаляет. */
+               блоков (hide). Денег не видит, людьми и доступами не управляет, проекты не создаёт и не удаляет.
+     developer — свои проекты (projectIds): во внутренней части всё, кабинет клиента только читает, денег не видит.
+     Внутренняя часть (задачи, вики, доски) — для команды: админ, менеджеры, разработчики. */
   const isAdmin = (u) => u.role === "admin";
   const isManager = (u) => u.role === "manager";
-  const hides = (u, block) => isManager(u) && (block === "payments" || (u.hide || []).includes(block));
+  const isTeam = (u) => Boolean(u) && (isAdmin(u) || PROJECT_ROLES.includes(u.role));
+  const canWork = (u, p) => isAdmin(u) || (PROJECT_ROLES.includes(u.role) && (u.projectIds || []).includes(p.id));
+  const hides = (u, block) => (isManager(u) && (block === "payments" || (u.hide || []).includes(block)))
+    || (u.role === "developer" && block === "payments");
   const clientNames = (p) => p.clientIds.map((id) => db.users.find((u) => u.id === id)).filter(Boolean);
 
   function projectView(p, user) {
@@ -102,7 +121,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       view.clientIds = p.clientIds;
       view.clients = clientNames(p).map(publicUser);
     }
-    if (isManager(user)) {
+    if (PROJECT_ROLES.includes(user.role)) {
       view.clients = clientNames(p).map((u) => ({ name: u.name, company: u.company || "" }));
       for (const block of ["payments", ...BLOCKS]) if (hides(user, block)) delete view[block];
       if (!view.files) delete view.links;
@@ -127,7 +146,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   }
 
   const canSee = (user, p) => isAdmin(user)
-    || (isManager(user) ? (user.projectIds || []).includes(p.id) : p.clientIds.includes(user.id));
+    || (PROJECT_ROLES.includes(user.role) ? (user.projectIds || []).includes(p.id) : p.clientIds.includes(user.id));
   function findProject(user, id) {
     const p = db.projects.find((x) => x.id === id);
     if (!p || !canSee(user, p)) fail(404, "not_found");
@@ -193,15 +212,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const meta = p.files.find((f) => f.id === params.fileId);
     const data = meta && store.readFile(meta.id);
     if (!data) fail(404, "not_found");
-    const inline = INLINE_TYPES.has(meta.type);
-    return {
-      raw: data,
-      headers: {
-        "Content-Type": inline ? meta.type : "application/octet-stream",
-        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
-        "Cache-Control": "private, no-store",
-      },
-    };
+    return fileResponse(meta, data);
   });
 
   // Ссылка на логотип содержит его id (?v=…), поэтому браузер может держать его в кеше.
@@ -223,13 +234,11 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       company: str(body.company, 120),
       contact: str(body.contact, 120),
       folder: str(body.folder, 120),
-      role: ["admin", "manager"].includes(body.role) ? body.role : "client",
+      role: ROLES.includes(body.role) ? body.role : "client",
       createdAt: new Date(now()).toISOString(),
     };
-    if (user.role === "manager") {
-      user.projectIds = projectIdsOf(body.projectIds ?? []);
-      user.hide = hideOf(body.hide ?? []);
-    }
+    if (PROJECT_ROLES.includes(user.role)) user.projectIds = projectIdsOf(body.projectIds ?? []);
+    if (user.role === "manager") user.hide = hideOf(body.hide ?? []);
     const clientProjects = user.role === "client" ? projectIdsOf(body.projectIds ?? []) : [];
     if (db.users.some((u) => u.login === user.login)) fail(409, "login_taken");
     folderOf(user.folder);
@@ -247,21 +256,18 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     if ("company" in body) user.company = str(body.company, 120);
     if ("contact" in body) user.contact = str(body.contact, 120);
     if ("folder" in body) user.folder = folderOf(body.folder);
-    // Смена роли: себе нельзя; менеджеру сразу задаются проекты, у остальных доступ по проектам снимается.
+    // Смена роли: себе нельзя; менеджеру и разработчику сразу задаются проекты, у остальных доступ по проектам снимается.
     if ("role" in body && body.role !== user.role) {
       if (user.id === me.id) fail(400, "self");
-      if (!["client", "manager", "admin"].includes(body.role)) fail(400, "role");
+      if (!ROLES.includes(body.role)) fail(400, "role");
       user.role = body.role;
-      if (user.role === "manager") {
-        user.projectIds = projectIdsOf(body.projectIds ?? []);
-        user.hide = hideOf(body.hide ?? []);
-      } else {
-        delete user.projectIds;
-        delete user.hide;
-      }
+      if (PROJECT_ROLES.includes(user.role)) user.projectIds = projectIdsOf(body.projectIds ?? []);
+      else delete user.projectIds;
+      if (user.role === "manager") user.hide = hideOf(body.hide ?? []);
+      else delete user.hide;
       if (user.role !== "client") for (const p of db.projects) p.clientIds = p.clientIds.filter((id) => id !== user.id);
     }
-    if (user.role === "manager" && "projectIds" in body) user.projectIds = projectIdsOf(body.projectIds);
+    if (PROJECT_ROLES.includes(user.role) && "projectIds" in body) user.projectIds = projectIdsOf(body.projectIds);
     if (user.role === "manager" && "hide" in body) user.hide = hideOf(body.hide);
     if (user.role === "client" && "projectIds" in body) setClientProjects(user, projectIdsOf(body.projectIds));
     if ("login" in body) {
@@ -428,6 +434,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     const p = findProject(user, params.id);
     for (const f of p.files) store.deleteFile(f.id);
     if (p.logo) store.deleteFile(p.logo.id);
+    work.removeProject(p.id);
+    boards.removeProject(p.id);
     db.projects.splice(db.projects.indexOf(p), 1);
     for (const u of db.users) if (u.projectIds) u.projectIds = u.projectIds.filter((x) => x !== p.id);
     store.save();
@@ -596,23 +604,8 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
   // Файл приходит телом запроса как есть, имя — в заголовке X-Filename (encodeURIComponent).
   route("POST", "/api/admin/projects/:id/files", async ({ user, params, req }) => {
     const p = findEditable(user, params.id, "files");
-    let name;
-    try {
-      name = decodeURIComponent(String(req.headers["x-filename"] || ""));
-    } catch {
-      fail(400, "filename");
-    }
-    name = name.replace(/[\\/\0\r\n]/g, "_").trim().slice(0, 160);
-    if (!name) fail(400, "filename");
-    const data = await readBody(req, FILE_LIMIT);
-    if (!data.length) fail(400, "empty");
-    const meta = {
-      id: store.id(),
-      name,
-      size: data.length,
-      type: String(req.headers["content-type"] || "application/octet-stream").split(";")[0].trim().slice(0, 100),
-      uploadedAt: new Date(now()).toISOString(),
-    };
+    const { name, data, type } = await readUpload(req, FILE_LIMIT);
+    const meta = { id: store.id(), name, size: data.length, type, uploadedAt: new Date(now()).toISOString() };
     store.writeFile(meta.id, data);
     p.files.push(meta);
     touch(p);
@@ -676,6 +669,42 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     store.save();
     return { body: { project: projectView(p, user) } };
   }, "staff");
+
+  /* ---------- Файлы ---------- */
+  // Файл приходит телом запроса как есть, имя — в заголовке X-Filename (encodeURIComponent).
+  async function readUpload(req, limit) {
+    let name;
+    try {
+      name = decodeURIComponent(String(req.headers["x-filename"] || ""));
+    } catch {
+      fail(400, "filename");
+    }
+    name = name.replace(/[\\/\0\r\n]/g, "_").trim().slice(0, 160);
+    if (!name) fail(400, "filename");
+    const data = await readBody(req, limit);
+    if (!data.length) fail(400, "empty");
+    const type = String(req.headers["content-type"] || "application/octet-stream").split(";")[0].trim().slice(0, 100);
+    return { name, data, type };
+  }
+  function fileResponse(meta, data, cache = "private, no-store") {
+    const inline = INLINE_TYPES.has(meta.type);
+    return {
+      raw: data,
+      headers: {
+        "Content-Type": inline ? meta.type : "application/octet-stream",
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
+        "Cache-Control": cache,
+      },
+    };
+  }
+
+  /* ---------- Внутренняя часть: задачи, вики, доски ---------- */
+  const ctx = {
+    route, db, store, now, fail, isAdmin, isTeam, canWork, canSee, hub, sessions, readUpload, fileResponse, imageType,
+    v: { str, required, dateOf, idOf, list },
+  };
+  const work = registerWork(ctx);
+  const boards = registerBoards({ ...ctx, work });
 
   /* ---------- Проверка полей ---------- */
   function str(v, max) {
@@ -749,7 +778,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     let bases;
     if (urlPath === "/favicon.svg" || urlPath === "/favicon.ico" || urlPath.startsWith("/fonts/")) {
       bases = [siteDir, publicDir]; // шрифты и иконку берём с сайта, чтобы не держать копии
-    } else if (urlPath === "/app.css" || urlPath === "/app.js") {
+    } else if (PUBLIC_FILES.has(urlPath)) {
       bases = [publicDir];
     } else if (!path.extname(urlPath)) {
       urlPath = "/index.html"; // маршруты интерфейса: /, /login, /p/…, /admin…
@@ -798,7 +827,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
     return `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(maxAge)}${secureCookie ? "; Secure" : ""}`;
   }
 
-  return async function handle(req, res) {
+  async function handle(req, res) {
     const url = new URL(req.url, "http://local");
     const ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress || "");
     try {
@@ -824,6 +853,7 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       if (r.access !== "public" && r.access !== "optional" && !user) fail(401, "auth");
       if (r.access === "admin" && !isAdmin(user)) fail(403, "admin");
       if (r.access === "staff" && !isAdmin(user) && !isManager(user)) fail(403, "admin");
+      if (r.access === "team" && !isTeam(user)) fail(403, "admin");
 
       let body = {};
       if (!r.rawBody && req.method !== "GET" && req.method !== "DELETE") {
@@ -839,16 +869,32 @@ function createApp({ dataDir = null, publicDir = path.join(__dirname, "public"),
       }
 
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-      const out = await r.handler({ req, user, token, body, params, ip });
+      // X-Client — id вкладки: живые обновления не возвращаются туда, откуда пришло изменение.
+      const client = String(req.headers["x-client"] || "").slice(0, 40);
+      const out = await r.handler({ req, user, token, body, params, ip, query: url.searchParams, client });
       if (out.raw) return send(res, 200, out.headers, out.raw);
+      if (out.sse) {
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Accel-Buffering": "no", // nginx отдаёт события сразу, не копит ответ
+        });
+        return out.sse(req, res);
+      }
       const extra = out.cookie ? { "Set-Cookie": cookieHeader(out.cookie) } : {};
       return sendJson(res, out.status || 200, out.body, extra);
     } catch (err) {
       if (err instanceof HttpError) return sendJson(res, err.status, { error: err.code });
       log.error(err);
+      if (res.headersSent) return res.end();
       return sendJson(res, 500, { error: "server" });
     }
-  };
+  }
+  // flush — дописать на диск доски перед остановкой; close — закрыть живые подключения (тесты, остановка).
+  handle.flush = () => boards.flush();
+  handle.close = () => hub.closeAll();
+  return handle;
 }
 
 // Свежие сверху; в один день выше та запись, что добавлена позже.

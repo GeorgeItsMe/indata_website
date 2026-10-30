@@ -7,7 +7,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const EMPTY = { users: [], projects: [], sessions: [], peopleFolders: [] };
+// issues, sprints, pages, boards — внутренняя часть команды (work.js, whiteboard.js).
+const EMPTY = { users: [], projects: [], sessions: [], peopleFolders: [], issues: [], sprints: [], pages: [], boards: [] };
 
 function createStore(dir) {
   const file = dir ? path.join(dir, "db.json") : null;

@@ -24,3 +24,12 @@ const handle = createApp({
 const port = Number(process.env.PORT) || 8790;
 const host = process.env.HOST || "127.0.0.1";
 http.createServer(handle).listen(port, host, () => console.log(`cabinet: http://${host}:${port}`));
+
+// pm2 restart: доски пишутся на диск с задержкой в секунду, перед выходом дописываем.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    handle.flush();
+    handle.close();
+    process.exit(0);
+  });
+}

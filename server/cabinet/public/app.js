@@ -1,5 +1,7 @@
 /* Кабинет клиента InData: одна страница, маршруты в адресной строке.
-   Весь текст из данных вставляется через textContent — никакого innerHTML с данными. */
+   Весь текст из данных вставляется через textContent — никакого innerHTML с данными.
+   Внутренняя часть команды (задачи, вики, доски) — в work.js и board.js: они берут отсюда общие функции
+   через window.InData и добавляют свои маршруты. */
 (() => {
   "use strict";
 
@@ -7,7 +9,10 @@
   const CONTACT = { label: "@geosibik", url: "https://t.me/geosibik" };
   const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
   const STATUS_LABELS = { todo: "Впереди", active: "В работе", done: "Готово" };
-  const ROLE_LABELS = { client: "Клиент", manager: "Менеджер проекта", admin: "Администратор" };
+  const ROLE_LABELS = { client: "Клиент", manager: "Менеджер проекта", developer: "Разработчик", admin: "Администратор" };
+  const TEAM_ROLES = ["admin", "manager", "developer"];
+  // id вкладки: сервер не присылает живые обновления туда, откуда пришло изменение.
+  const CLIENT = Math.random().toString(36).slice(2, 12);
   // Блоки, которые можно скрыть от менеджера. Оплаты и суммы скрыты всегда.
   const BLOCK_LABELS = { tasks: "Задачи для заказчика", meetings: "Созвоны и договорённости", updates: "Лента обновлений", files: "Документы" };
   const ERRORS = {
@@ -30,6 +35,7 @@
   let me = null;          // вошедший пользователь
   let renderId = 0;       // защита от гонок: ответ старого экрана не рисуем поверх нового
   let leaveGuard = null;  // () => true, если можно уйти со страницы без потери правок
+  let cleanups = [];      // что закрыть при уходе с экрана: живые подключения, обработчики клавиш
 
   /* ---------- DOM ---------- */
   function h(tag, props, ...children) {
@@ -151,7 +157,7 @@
     }
   }
   async function api(method, url, body, { allow401 = false, headers = {} } = {}) {
-    const init = { method, headers: { ...headers }, credentials: "same-origin" };
+    const init = { method, headers: { "X-Client": CLIENT, ...headers }, credentials: "same-origin" };
     if (body instanceof Blob) {
       init.body = body;
       init.headers["Content-Type"] = body.type || "application/octet-stream";
@@ -203,6 +209,11 @@
     { re: /^\/admin\/bookings$/, view: viewAdminBookings, access: "admin" },
     { re: /^\/admin\/p\/([\w-]+)$/, view: viewAdminProject, access: "staff" },
   ];
+  const ACCESS = {
+    admin: (role) => role === "admin",
+    staff: (role) => role === "admin" || role === "manager",
+    team: (role) => TEAM_ROLES.includes(role),
+  };
 
   function navigate(path, { replace = false, force = false } = {}) {
     if (!force && leaveGuard && !leaveGuard()) return;
@@ -225,8 +236,15 @@
     if (!route) return navigate("/", { replace: true });
     if (route.access !== "public" && !me) return navigate("/login", { replace: true });
     if (route.access === "public" && me) return navigate("/", { replace: true });
-    if (route.access === "admin" && me.role !== "admin") return navigate("/", { replace: true });
-    if (route.access === "staff" && me.role === "client") return navigate("/", { replace: true });
+    if (ACCESS[route.access] && !ACCESS[route.access](me.role)) return navigate("/", { replace: true });
+    for (const fn of cleanups.splice(0)) {
+      try {
+        fn();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    document.body.classList.remove("is-fullscreen");
     window.scrollTo(0, 0);
     const params = path.match(route.re).slice(1);
     try {
@@ -244,14 +262,21 @@
     }
   }
 
-  // Шапка, вкладки админа и место для экрана.
+  // Шапка, вкладки разделов и место для экрана. «Работа» — внутренняя часть команды.
+  const NAV = {
+    admin: [["/work", "Работа"], ["/admin", "Проекты"], ["/admin/bookings", "Заявки"], ["/admin/clients", "Люди"]],
+    manager: [["/work", "Работа"], ["/", "Проекты"]],
+  };
+  function isCurrent(href) {
+    const path = location.pathname;
+    if (href === "/admin") return /^\/admin(\/p\/|$)/.test(path);
+    if (href === "/") return path === "/" || path.startsWith("/p/");
+    return path.startsWith(href);
+  }
   function shell(...content) {
-    const nav = me.role === "admin"
+    const nav = NAV[me.role]
       ? h("nav", { class: "tabs", "aria-label": "Разделы" },
-        [["/admin", "Проекты"], ["/admin/bookings", "Заявки"], ["/admin/clients", "Люди"]].map(([href, label]) => {
-          const current = href === "/admin" ? /^\/admin(\/p\/|$)/.test(location.pathname) : location.pathname.startsWith(href);
-          return link(href, { "aria-current": current ? "page" : null }, label);
-        }))
+        NAV[me.role].map(([href, label]) => link(href, { "aria-current": isCurrent(href) ? "page" : null }, label)))
       : null;
     return [
       h("header", { class: "top" },
@@ -318,6 +343,7 @@
   /* ---------- Клиент: проекты ---------- */
   async function viewHome(alive) {
     if (me.role === "admin") return navigate("/admin", { replace: true });
+    if (me.role === "developer") return navigate("/work", { replace: true });
     loading();
     const { projects } = await api("GET", "/api/projects");
     if (!alive()) return;
@@ -391,9 +417,12 @@
     ]);
     if (!alive()) return;
     let p = project;
-    const admin = me.role !== "client"; // админ или менеджер смотрят глазами клиента
+    const admin = me.role !== "client"; // команда смотрит глазами клиента
+    const canEdit = me.role === "admin" || me.role === "manager"; // разработчик кабинет клиента только читает
     // У клиента с одним проектом «все проекты» — это он сам, стрелка назад не нужна.
-    const back = admin || mine.projects.length > 1 ? backLink(me.role === "admin" ? "/admin" : "/", "Все проекты") : null;
+    const back = me.role === "developer"
+      ? backLink(`/work/p/${id}`, "К задачам проекта")
+      : admin || mine.projects.length > 1 ? backLink(me.role === "admin" ? "/admin" : "/", "Все проекты") : null;
 
     const threads = new Set(); // открытые ветки комментариев
     // Правка чек-листа прямо на месте (админ и менеджер): какой пункт правим, куда добавляем, какой раздел переименовываем.
@@ -412,7 +441,7 @@
       }
     };
     const act = {
-      staff: me.role !== "client",
+      staff: canEdit,
       edit,
       redraw: () => draw(),
       saveTask: (t, body) => run(() => api("PATCH", `/api/admin/projects/${p.id}/tasks/${t.id}`, body), "Сохранено", () => { edit.item = null; }),
@@ -470,7 +499,11 @@
           admin || !back ? h("span", { class: "eyebrow mono", text: admin ? "Так проект видит клиент" : "Проект" }) : null,
           h("h1", { class: "h1", text: p.title }),
           p.summary ? h("p", { class: "lead", text: p.summary }) : null),
-        admin ? h("div", { class: "actions" }, btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" })) : null);
+        admin
+          ? h("div", { class: "actions" },
+            btn("Задачи команды", { href: `/work/p/${p.id}`, variant: "light" }),
+            canEdit ? btn("Редактировать", { href: `/admin/p/${p.id}`, variant: "light" }) : null)
+          : null);
       const tabs = h("nav", { class: "subtabs", "aria-label": "Разделы проекта" },
         link(base, { "aria-current": tab === "overview" ? "page" : null }, "Обзор"),
         p.tasks
@@ -1590,10 +1623,15 @@
         hideBoxes.map((box) => h("label", { class: "check" }, box, BLOCK_LABELS[box.value]))));
     const isManagerForm = () => role.value === "manager";
     const hasProjects = () => role.value !== "admin";
+    const PROJECTS_LABELS = {
+      manager: "Какие проекты ведёт",
+      developer: "В каких проектах работает: задачи, вики и доски команды, кабинет клиента без денег",
+      client: "Какие проекты видит в кабинете",
+    };
     function syncRole() {
       projectsField.hidden = !hasProjects();
       hideField.hidden = !isManagerForm();
-      projectsLabel.textContent = isManagerForm() ? "Какие проекты ведёт" : "Какие проекты видит в кабинете";
+      projectsLabel.textContent = PROJECTS_LABELS[role.value] || "";
     }
     role.addEventListener("change", syncRole);
 
@@ -1946,9 +1984,22 @@
     ));
   }
 
+  /* ---------- Общие функции для work.js и board.js ---------- */
+  window.InData = {
+    h, append, link, btn, setBtnLabel, backLink, fmtDate, fmtRange, fileSize, today, plural, hostOf,
+    api, ApiError, errorText, toast, navigate, shell, loading, root, CLIENT, ROLE_LABELS, ERRORS, TEAM_ROLES,
+    logoSrc,
+    me: () => me,
+    addRoutes: (list) => ROUTES.splice(ROUTES.length, 0, ...list),
+    setLeaveGuard: (fn) => { leaveGuard = fn; },
+    onLeave: (fn) => { cleanups.push(fn); },
+  };
+
   /* ---------- Старт ---------- */
-  api("GET", "/api/me", undefined, { allow401: true })
-    .then(({ user }) => { me = user || null; })
-    .catch(() => { me = null; })
-    .finally(render);
+  // Ждём и пользователя, и остальные скрипты (defer): маршруты work.js должны успеть добавиться.
+  const ready = new Promise((resolve) => (document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", resolve, { once: true }) : resolve()));
+  Promise.all([
+    api("GET", "/api/me", undefined, { allow401: true }).then(({ user }) => { me = user || null; }).catch(() => { me = null; }),
+    ready,
+  ]).finally(render);
 })();
