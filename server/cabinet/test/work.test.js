@@ -439,6 +439,31 @@ test("доска: голосование точками и общий тайме
   stream.close();
 });
 
+test("доска: приватный режим скрывает чужие стикеры до раскрытия", async () => {
+  const stream = await dev.events(`/api/work/boards/${board.id}/events?client=tab-dev`);
+  await stream.next("hello");
+  assert.equal((await pm("POST", `/api/work/boards/${board.id}/private`, { on: true })).json.privateMode.by, "ПМ");
+  assert.equal((await stream.next("private")).privateMode.by, "ПМ");
+  await pm("POST", `/api/work/boards/${board.id}/ops`, { client: "tab-pm", ops: [{ op: "put", item: { id: "priv0001", type: "sticky", x: 0, y: 0, w: 200, h: 200, text: "Секрет ПМ" } }] });
+  const seen = (await stream.next("ops")).ops[0].item;
+  assert.deepEqual([seen.text, seen.masked], ["", true], "в потоке коллеге текст не приходит");
+  const forDev = (await dev("GET", `/api/work/boards/${board.id}`)).json.items.find((it) => it.id === "priv0001");
+  assert.deepEqual([forDev.text, forDev.masked], ["", true]);
+  assert.equal((await pm("GET", `/api/work/boards/${board.id}`)).json.items.find((it) => it.id === "priv0001").text, "Секрет ПМ", "автор видит свой");
+  assert.equal((await dev("POST", `/api/work/boards/${board.id}/ops`, { ops: [{ op: "put", item: { ...forDev, text: "чужое" } }] })).status, 403, "чужой приватный не правится");
+  assert.equal((await dev("POST", `/api/work/boards/${board.id}/ops`, { ops: [{ op: "del", id: "priv0001" }] })).status, 403);
+  assert.equal((await dev("POST", `/api/work/boards/${board.id}/vote`, { itemId: "priv0001" })).status, 403);
+  await pm("POST", `/api/work/boards/${board.id}/ops`, { client: "tab-pm", ops: [{ op: "put", item: { id: "priv0001", type: "sticky", x: 40, y: 0, w: 200, h: 200, text: "Секрет ПМ, правка" } }] });
+  await stream.next("ops");
+  await dev("POST", `/api/work/boards/${board.id}/private`, { on: false });
+  const opened = (await stream.next("ops")).ops.find((op) => op.item.id === "priv0001").item;
+  assert.deepEqual([opened.text, opened.masked, opened.hidden], ["Секрет ПМ, правка", undefined, undefined], "после раскрытия видят все");
+  assert.equal((await stream.next("private")).privateMode, null);
+  await dev("POST", `/api/work/boards/${board.id}/ops`, { ops: [{ op: "put", item: { id: "open0001", type: "sticky", x: 0, y: 0, w: 200, h: 200, text: "Обычный" } }] });
+  assert.equal((await pm("GET", `/api/work/boards/${board.id}`)).json.items.find((it) => it.id === "open0001").text, "Обычный", "без режима всё открыто");
+  stream.close();
+});
+
 test("доска сохраняется на диск и переживает перезапуск", async () => {
   handle.flush();
   const again = createApp({ dataDir, origins: [ORIGIN], secureCookie: false, log: { error() {} } });

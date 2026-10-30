@@ -19,10 +19,11 @@ function createHub({ heartbeatMs = 20000 } = {}) {
     return [...seen.values()];
   }
 
-  function publish(name, event, data, { except = "" } = {}) {
+  // view(meta) — своё содержимое для каждого подключения (например, чужие приватные стикеры скрыты).
+  function publish(name, event, data, { except = "", view = null } = {}) {
     for (const conn of channels.get(name) || []) {
       if (except && conn.meta.client === except) continue;
-      write(conn, event, data);
+      write(conn, event, view ? view(conn.meta) : data);
     }
   }
 

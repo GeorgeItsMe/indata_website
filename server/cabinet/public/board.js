@@ -53,7 +53,9 @@
     help: "M6 6a2 2 0 1 1 2.8 1.8c-.5.3-.8.7-.8 1.2v.5M8 12h.01",
     vote: "M8 13.5s-5.5-3.2-5.5-7A3 3 0 0 1 8 4.8a3 3 0 0 1 5.5 1.7c0 3.8-5.5 7-5.5 7z",
     timer: "M8 14.5A5.5 5.5 0 1 0 8 3.5a5.5 5.5 0 0 0 0 11zM8 6v3l2 1.2M6.5 1.5h3",
+    eyeoff: "M2 8s2.2-4 6-4c1 0 1.9.3 2.7.7M14 8s-2.2 4-6 4c-1 0-1.9-.3-2.7-.7M6.6 9.4a2 2 0 0 1 2.8-2.8M2.5 13.5l11-11",
   };
+  I.ERRORS.private = "Это приватный стикер коллеги: его откроют, когда выключат приватный режим";
   const VOTABLE = new Set(["sticky", "shape", "text", "image", "issue"]);
   const icon = (name) => svg("svg", { viewBox: "0 0 16 16", class: "ico", "aria-hidden": "true" }, svg("path", { d: TOOL_ICONS[name] }));
   const TOOLS = [
@@ -155,6 +157,33 @@
     const statusEl = h("span", { class: "wb-status mono", text: "Сохранено" });
     const zoomLabel = h("button", { class: "wb-zoom__label mono", type: "button", title: "100% (Shift+0)", onclick: () => zoomTo(1) });
     const presenceEl = h("div", { class: "wb-presence" });
+    // Приватный режим: новые стикеры каждого видит только автор, пока режим не выключат.
+    let privateMode = board.privateMode;
+    const privateBtn = h("button", { class: "wb-timer wb-private-btn", type: "button", onclick: () => togglePrivate() });
+    const privateBar = h("div", { class: "wb-private-bar", hidden: true });
+    function drawPrivate() {
+      privateBtn.replaceChildren(icon("eyeoff"), privateMode ? "Показать всем" : "");
+      privateBtn.classList.toggle("is-on", Boolean(privateMode));
+      privateBtn.title = privateMode ? "Открыть все приватные стикеры" : "Приватный режим: пишут каждый сам, потом открываем всем";
+      const hiddenOthers = [...items.values()].filter((it) => it.masked).length;
+      privateBar.hidden = !privateMode;
+      if (privateMode) {
+        privateBar.replaceChildren(icon("eyeoff"),
+          h("span", { text: `Приватный режим${privateMode.by ? ` (${privateMode.by})` : ""}: ваши новые стикеры видите только вы${hiddenOthers ? `, у коллег скрыто: ${hiddenOthers}` : ""}.` }),
+          h("button", { class: "link-btn", type: "button", text: "Показать всем", onclick: () => togglePrivate() }));
+      }
+    }
+    async function togglePrivate() {
+      const on = !privateMode;
+      if (!on && !confirm("Открыть все приватные стикеры всем на доске?")) return;
+      try {
+        privateMode = (await api("POST", `/api/work/boards/${id}/private`, { on })).privateMode;
+        drawPrivate();
+        toast(on ? "Приватный режим включён" : "Стикеры открыты всем");
+      } catch (err) {
+        toast(errorText(err));
+      }
+    }
     // Общий таймер: время конца считаем по своим часам от остатка, который прислал сервер.
     let timer = null;
     const timerEl = h("button", { class: "wb-timer mono", type: "button", title: "Таймер для всех на доске", onclick: () => timerMenu() });
@@ -262,6 +291,7 @@
         titleInput),
       h("div", { class: "wb-top__right" },
         presenceEl,
+        privateBtn,
         timerEl,
         statusEl,
         h("div", { class: "wb-zoom" },
@@ -272,7 +302,7 @@
         h("button", { class: "icon-btn", type: "button", title: "Скопировать ссылку", "aria-label": "Скопировать ссылку", onclick: () => copyText(location.href) }, ico("link")),
         h("button", { class: "icon-btn", type: "button", title: "Горячие клавиши", "aria-label": "Горячие клавиши", onclick: () => help() }, icon("help")),
         board.canManage ? h("button", { class: "icon-btn icon-btn--danger", type: "button", title: "Удалить доску", "aria-label": "Удалить доску", onclick: removeBoard }, ico("trash")) : null));
-    const app = h("div", { class: "wb" }, top, h("div", { class: "wb-stage" }, viewEl, cursorsEl, ctxBar, toolsEl, picker));
+    const app = h("div", { class: "wb" }, top, h("div", { class: "wb-stage" }, viewEl, cursorsEl, privateBar, ctxBar, toolsEl, picker));
     I.root.replaceChildren(app);
 
     /* --- Вид: перенос и масштаб --- */
@@ -427,6 +457,8 @@
       }
       node.style.zIndex = String(Math.round(Math.max(-1e6, Math.min(1e6, it.z))) + 1000000);
       node.classList.toggle("is-locked", Boolean(it.locked));
+      node.classList.toggle("is-masked", Boolean(it.masked));
+      node.classList.toggle("is-private", it.hidden === I.me().id);
       if (BOX_TYPES.has(it.type)) {
         node.style.transform = `translate(${it.x}px, ${it.y}px)`;
         node.style.width = `${it.w}px`;
@@ -890,6 +922,7 @@
       const unknownIssues = ops.filter((op) => op.op === "put" && op.item.type === "issue" && !issues.has(op.item.issueId));
       refresh(ids);
       if (unknownIssues.length) refreshIssues();
+      if (privateMode) drawPrivate();
     }
     async function resync() {
       try {
@@ -961,6 +994,11 @@
         const others = members.filter((m) => m.userId !== I.me().id);
         presenceEl.replaceChildren(...others.slice(0, 6).map((m) => avatar(m.userId, { size: 28 })), others.length ? "" : h("span", { class: "mono muted", text: "вы одни" }));
         presenceEl.title = others.length ? `Сейчас на доске: ${others.map((m) => m.name).join(", ")}` : "";
+      },
+      private: (ev) => {
+        privateMode = ev.privateMode;
+        drawPrivate();
+        if (ev.by !== I.me().name) toast(ev.privateMode ? `Приватный режим: ${ev.by}` : `Стикеры открыты всем: ${ev.by}`);
       },
       timer: (ev) => {
         setTimer(ev.timer);
@@ -1128,7 +1166,7 @@
     /* --- Правка текста прямо на доске --- */
     function startEdit(itemId) {
       const it = items.get(itemId);
-      if (!it || it.locked || !["sticky", "text", "shape", "frame", "line"].includes(it.type)) return;
+      if (!it || it.locked || it.masked || !["sticky", "text", "shape", "frame", "line"].includes(it.type)) return;
       finishEdit();
       editing = itemId;
       ctxBar.hidden = true;
@@ -1228,7 +1266,8 @@
       const p = toWorld(e.clientX, e.clientY);
       const handle = e.target.dataset.handle;
       const targetEl = e.target.closest("[data-id]");
-      const target = targetEl ? items.get(targetEl.dataset.id) : null;
+      const hit = targetEl ? items.get(targetEl.dataset.id) : null;
+      const target = hit && !hit.masked ? hit : null; // чужой приватный стикер не трогаем
       const pan = e.button === 1 || spaceDown || tool === "hand" || (e.pointerType === "touch" && !target && tool === "select");
       viewEl.setPointerCapture(e.pointerId);
       if (pan) {
@@ -1431,6 +1470,7 @@
           action.el.style.height = `${hgt}px`;
           const box = { x, y, w, h: hgt };
           const hits = [...items.values()].filter((it) => {
+            if (it.masked) return false;
             const b = boxOf(it);
             return b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y && !(it.type === "frame" && !inside(box, it));
           }).map((it) => it.id);
@@ -1528,7 +1568,9 @@
       return el ? items.get(el.closest("[data-id]").dataset.id) : null;
     };
     viewEl.addEventListener("dblclick", (e) => {
-      const it = itemAt(e.clientX, e.clientY);
+      const found = itemAt(e.clientX, e.clientY);
+      const it = found && !found.masked ? found : null;
+      if (found?.masked) return;
       if (it?.type === "issue") return openCardIssue(it);
       if (it) return startEdit(it.id);
       // Двойной клик по пустому месту — новый стикер.
@@ -1558,7 +1600,7 @@
       if (e.key === " " && !spaceDown) { spaceDown = true; viewEl.classList.add("is-space"); e.preventDefault(); return; }
       if (mod && k === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
       if (mod && k === "y") { e.preventDefault(); redo(); return; }
-      if (mod && k === "a") { e.preventDefault(); select([...items.keys()]); return; }
+      if (mod && k === "a") { e.preventDefault(); select([...items.values()].filter((it) => !it.masked).map((it) => it.id)); return; }
       if (mod && k === "d") { e.preventDefault(); duplicate(); return; }
       if (mod && (k === "c" || k === "x")) {
         if (!selection.size) return;
@@ -1674,6 +1716,7 @@
 
     /* --- Старт --- */
     setTimer(board.timer);
+    drawPrivate();
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); } catch {}
     renderAll();

@@ -12,6 +12,8 @@ const MAX_OPS = 500;
 const C = 1e6; // координаты доски ограничены, чтобы никто не уронил отрисовку числами вроде 1e300
 const IMAGE_LIMIT = 10 * 1024 * 1024;
 const PERSIST_MS = 1000;
+// В приватном режиме новые стикеры, тексты и фигуры видит только автор, пока режим не выключат.
+const PRIVATE_TYPES = new Set(["sticky", "text", "shape"]);
 
 function registerBoards(ctx) {
   const { route, db, store, now, fail, v, isAdmin, isTeam, canWork, hub, sessions, readUpload, fileResponse, imageType, work } = ctx;
@@ -71,7 +73,7 @@ function registerBoards(ctx) {
     if (p) work.ensureKey(p);
     const timer = b.timer && Date.parse(b.timer.endsAt) > now() ? { ...b.timer, left: Date.parse(b.timer.endsAt) - now() } : null;
     return {
-      id: b.id, projectId: b.projectId, title: b.title, count: b.count || 0, timer,
+      id: b.id, projectId: b.projectId, title: b.title, count: b.count || 0, timer, privateMode: b.privateMode || null,
       createdAt: b.createdAt, createdBy: nameOf(b.createdBy), updatedAt: b.updatedAt, updatedBy: nameOf(b.updatedBy),
       project: p ? { id: p.id, title: p.title, key: p.key } : null,
     };
@@ -138,14 +140,26 @@ function registerBoards(ctx) {
     return it;
   }
 
+  // Чужой скрытый объект приходит без текста и голосов: видно, что коллега пишет, но не что.
+  const mask = (it, viewerId) => (it.hidden && it.hidden !== viewerId ? { ...it, text: "", votes: undefined, masked: true } : it);
+  const viewOps = (ops) => (meta) => ops.map((op) => (op.op === "put" ? { op: "put", item: mask(op.item, meta.userId) } : op));
+  const ownsOrOpen = (it, user) => !it?.hidden || it.hidden === user.id;
+
   // Сначала проверяем всю пачку, потом применяем: ошибка в одной операции не оставляет доску наполовину изменённой.
-  function apply(board, d, ops) {
+  function apply(board, d, ops, user) {
     if (!Array.isArray(ops) || !ops.length || ops.length > MAX_OPS) fail(400, "ops");
     const clean = ops.map((op) => {
       if (op && op.op === "put") return { op: "put", item: itemOf(op.item, board) };
       if (op && op.op === "del") return { op: "del", id: ref(op.id) || fail(400, "op") };
       return fail(400, "op");
     });
+    for (const op of clean) {
+      const prev = d.items.get(op.op === "put" ? op.item.id : op.id);
+      if (!ownsOrOpen(prev, user)) fail(403, "private");
+      if (op.op !== "put") continue;
+      if (prev?.hidden) op.item.hidden = prev.hidden;
+      else if (!prev && board.privateMode && PRIVATE_TYPES.has(op.item.type)) op.item.hidden = user.id;
+    }
     const adds = new Set(clean.filter((op) => op.op === "put" && !d.items.has(op.item.id)).map((op) => op.item.id));
     if (d.items.size + adds.size > MAX_ITEMS) fail(400, "board_full");
     for (const op of clean) {
@@ -257,7 +271,7 @@ function registerBoards(ctx) {
       if (p && canWork(user, p)) issues.push(work.summary(i, (work.ensureKey(p), p)));
     }
     const team = db.users.filter(isTeam).map((u) => ({ id: u.id, name: u.name, login: u.login, role: u.role, disabled: Boolean(u.disabled) }));
-    return { body: { board: { ...boardMeta(b), canManage: canManage(user, b) }, items, version: d.version, issues, team } };
+    return { body: { board: { ...boardMeta(b), canManage: canManage(user, b) }, items: items.map((it) => mask(it, user.id)), version: d.version, issues, team } };
   }, "team");
 
   route("POST", "/api/work/boards/:id/ops", async ({ user, params, body }) => {
@@ -265,12 +279,13 @@ function registerBoards(ctx) {
     const d = docOf(b);
     const client = str(body.client, 40);
     const seq = str(body.seq, 40); // номер пачки: вкладка узнаёт своё эхо и чужие правки, пришедшие после
-    const ops = apply(b, d, body.ops);
+    const ops = apply(b, d, body.ops, user);
     b.count = d.items.size;
     b.updatedAt = iso();
     b.updatedBy = user.id;
     schedule(b, d);
-    hub.publish(`board:${b.id}`, "ops", { version: d.version, client, seq, by: user.name, ops });
+    const payload = { version: d.version, client, seq, by: user.name };
+    hub.publish(`board:${b.id}`, "ops", null, { view: (meta) => ({ ...payload, ops: viewOps(ops)(meta) }) });
     return { body: { version: d.version } };
   }, "team");
 
@@ -292,6 +307,7 @@ function registerBoards(ctx) {
     const d = docOf(b);
     const it = d.items.get(ref(body.itemId)) || fail(404, "not_found");
     if (!["sticky", "shape", "text", "image", "issue"].includes(it.type)) fail(400, "item");
+    if (!ownsOrOpen(it, user)) fail(403, "private");
     const votes = new Set(it.votes || []);
     if (votes.has(user.id)) votes.delete(user.id);
     else votes.add(user.id);
@@ -302,8 +318,36 @@ function registerBoards(ctx) {
     b.updatedAt = iso();
     b.updatedBy = user.id;
     schedule(b, d);
-    hub.publish(`board:${b.id}`, "ops", { version: d.version, client: "", seq: "", by: user.name, ops: [{ op: "put", item: next }] });
+    const payload = { version: d.version, client: "", seq: "", by: user.name };
+    hub.publish(`board:${b.id}`, "ops", null, { view: (meta) => ({ ...payload, ops: viewOps([{ op: "put", item: next }])(meta) }) });
     return { body: { version: d.version, votes: next.votes || [] } };
+  }, "team");
+
+  // Приватный режим, как в Miro на ретро: пишут каждый сам, потом открывают всем разом.
+  route("POST", "/api/work/boards/:id/private", async ({ user, params, body }) => {
+    const b = findBoard(user, params.id);
+    const d = docOf(b);
+    if (body.on) {
+      b.privateMode = { by: user.name, at: iso() };
+    } else {
+      b.privateMode = null;
+      const opened = [];
+      for (const it of d.items.values()) {
+        if (!it.hidden) continue;
+        const next = { ...it };
+        delete next.hidden;
+        d.items.set(it.id, next);
+        opened.push({ op: "put", item: next });
+      }
+      if (opened.length) {
+        d.version += 1;
+        schedule(b, d);
+        hub.publish(`board:${b.id}`, "ops", { version: d.version, client: "", seq: "", by: user.name, ops: opened });
+      }
+    }
+    store.save();
+    hub.publish(`board:${b.id}`, "private", { privateMode: b.privateMode, by: user.name });
+    return { body: { privateMode: b.privateMode } };
   }, "team");
 
   // Общий таймер доски: видят все, кто открыл доску. seconds = 0 — остановить.

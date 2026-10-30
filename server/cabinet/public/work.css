@@ -1124,6 +1124,30 @@ body.is-fullscreen #app { height: 100vh; height: 100dvh; }
 @keyframes pulse-bg { 50% { opacity: .7; } }
 .timer-picks { display: flex; gap: 8px; flex-wrap: wrap; }
 
+.wb-private-btn.is-on { background: #6250d6; }
+.wb-private-bar {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: #ece9fd;
+  color: #2f2390;
+  font-size: 14px;
+  transform: translateX(-50%);
+  box-shadow: 0 6px 20px rgb(0 0 0 / .08);
+}
+.wb-private-bar .ico { flex: none; }
+.wb-private-bar .link-btn { flex: none; color: #4b3bbd; text-decoration: underline; font-weight: 500; }
+.wb-item.is-masked { pointer-events: none; filter: blur(calc(2px * min(var(--inv), 3))); opacity: .75; }
+.wb-item.is-masked > .wb-text::after { content: "Пишут…"; color: rgb(0 0 0 / .45); font-size: 22px; }
+.wb-item.is-private { outline: calc(2px * min(var(--inv), 3)) dashed #6250d6; outline-offset: calc(3px * min(var(--inv), 3)); }
+
 /* ---------- Телефон и узкие экраны ---------- */
 @media (max-width: 1100px) {
   .work-home { grid-template-columns: 1fr; gap: 40px; }
